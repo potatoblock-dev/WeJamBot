@@ -1,0 +1,243 @@
+// WeJamBot 服务契约
+//
+// 设计原则：
+//   1. 契约描述「能力」与「状态」，不描述「手段」。
+//      a11y / XTEST / zbar / 截图 这类词不应出现在这里。
+//   2. 业务语义为主（登录、后续的消息读写），原子能力降级为逃生舱。
+//   3. 状态由服务持有：客户端只 Get / Watch，不负责判断和决策。
+syntax = "proto3";
+
+package wejam.v1;
+
+// ---------------------------------------------------------------------------
+// 服务
+// ---------------------------------------------------------------------------
+service WeJam {
+  // 服务与微信进程的整体状态
+  rpc GetStatus(GetStatusRequest) returns (Status);
+
+  // ---- 登录：状态由服务维护，客户端只消费 ----
+  rpc GetLoginState(GetLoginStateRequest) returns (LoginState);
+  rpc WatchLogin(WatchLoginRequest) returns (stream LoginState);
+  rpc GetLoginQRCode(GetLoginQRCodeRequest) returns (LoginQRCode);
+  // 「记住账号」场景下由客户端触发；服务内部决定怎么落地
+  rpc SubmitLogin(SubmitLoginRequest) returns (LoginState);
+
+  // ---- 会话与消息 ----
+  rpc ListChats(ListChatsRequest) returns (ListChatsResponse);
+  rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
+  // 轮询式增量推送：服务端自己 diff，客户端不做任何解析。
+  // 建议**显式指定 chat**：指定后服务端会保持该会话打开，无歧义。
+  // 不指定时跟随「当前打开的会话」，此时若界面切走，
+  // 切换瞬间到达的消息可能被计入新基线而漏推 —— 这是界面语义的固有歧义。
+  rpc WatchMessages(WatchMessagesRequest) returns (stream MessageEvent);
+  rpc SendText(SendTextRequest) returns (SendResult);
+  // 对某条消息执行右键菜单动作（复制 / 转发 / 收藏 / 引用 / 提醒 / 翻译 / 多选）。
+  // 删除与撤回属于危险动作，服务端默认拒绝。
+  rpc InvokeMessage(InvokeMessageRequest) returns (InvokeMessageResult);
+
+  // ---- 未读徽标 ----
+  // 说明：导航图标上的「小红点/数字徽标」是**绘制装饰**，不在无障碍树里。
+  // 服务端用「无障碍定位 + 像素颜色判定」给出「有没有徽标」；
+  // 徽标里的数字不 OCR 读不到，但会话级未读数可由 ListChats 精确获得。
+  rpc GetBadges(GetBadgesRequest) returns (GetBadgesResponse);
+
+  // ---- 逃生舱：给需要深度定制的客户端，默认可由服务开关关闭 ----
+  rpc DumpA11yTree(DumpA11yTreeRequest) returns (DumpA11yTreeResponse);
+  rpc InvokeNode(InvokeNodeRequest) returns (InvokeNodeResponse);
+}
+
+// ---------------------------------------------------------------------------
+// 状态
+// ---------------------------------------------------------------------------
+message GetStatusRequest {}
+
+message Status {
+  bool ready = 1;              // 微信窗口是否已就绪
+  string wechat_version = 2;   // 服务探测到的微信版本
+  LoginPhase login_phase = 3;
+  int64 uptime_ms = 4;
+}
+
+// ---------------------------------------------------------------------------
+// 登录
+// ---------------------------------------------------------------------------
+enum LoginPhase {
+  LOGIN_PHASE_UNSPECIFIED = 0;
+  LOGIN_PHASE_STARTING = 1;         // 微信还没起来 / 界面未识别
+  LOGIN_PHASE_QR_READY = 2;         // 二维码已就绪，等待用户扫码
+  LOGIN_PHASE_ONE_CLICK_READY = 3;  // 记住了账号，可一键登录
+  LOGIN_PHASE_WAIT_PHONE = 4;       // 已扫码/已点击，等待手机确认
+  LOGIN_PHASE_LOGGED_IN = 5;        // 已登录
+  LOGIN_PHASE_UNKNOWN = 6;          // 界面不匹配任何已知状态
+}
+
+message LoginState {
+  LoginPhase phase = 1;
+  string detail = 2;               // 界面上的关键文案，便于排障
+  int64 since_unix_ms = 3;         // 进入该状态的时间戳
+  repeated string markers = 4;     // 命中的语义标记
+}
+
+message GetLoginStateRequest {}
+message WatchLoginRequest {}
+
+message GetLoginQRCodeRequest {}
+
+message LoginQRCode {
+  // 二维码的**内容**（已由服务解码）。客户端自行决定怎么呈现，
+  // 服务不回像素。
+  string payload = 1;
+  // 内容指纹；变化即表示二维码已刷新，客户端应重新呈现。
+  string revision = 2;
+  int64 fetched_unix_ms = 3;
+}
+
+message SubmitLoginRequest {}
+
+// ---------------------------------------------------------------------------
+// 会话与消息
+// ---------------------------------------------------------------------------
+message ListChatsRequest {}
+
+message Chat {
+  string name = 1;          // 会话名（当前作为标识；微信界面不暴露稳定 id）
+  string last_message = 2;  // 最后一条消息预览
+  string last_time = 3;     // 界面上的时间文案
+  int32 unread_count = 4;   // 未读数，0 表示无
+  bool pinned = 5;
+  bool muted = 6;
+}
+
+message ListChatsResponse {
+  repeated Chat chats = 1;
+}
+
+enum MessageKind {
+  MESSAGE_KIND_UNSPECIFIED = 0;
+  MESSAGE_KIND_TEXT = 1;     // 正文
+  MESSAGE_KIND_TIME = 2;     // 时间分隔
+  MESSAGE_KIND_SYSTEM = 3;   // 系统提示（撤回、入群等）
+}
+
+message Message {
+  string id = 1;         // 由 会话+时间桶+正文+出现次序 派生，用于去重
+  string chat = 2;
+  string sender = 3;     // 群聊里可解析出发送者；单聊留空
+  string text = 4;
+  string time_text = 5;
+  MessageKind kind = 6;
+  int32 index = 7;       // 在会话中的序号
+  // true = 来自会话列表预览（可能被截断），而不是打开会话读到的完整正文。
+  // 全局监听模式只能给预览 —— 打开会话会清掉用户的未读，代价太大。
+  bool preview_only = 8;
+  // 内容类型：text / image / video / file / voice / location / link /
+  // emotion / merge / card / note / miniapp / transfer / redpacket / quote ...
+  // 微信把非文本消息渲染成带标记的占位文本（如 "[链接]标题\n来源"），据此判定。
+  string content_type = 10;
+  // true = 这条是**本服务自己发的**（服务端做了溯源）。
+  // 客户端据此避免「监听 → 回复 → 回复又被监听到」的死循环，
+  // 不需要给消息加 [bot] 之类的约定前缀。
+  bool from_self = 9;
+}
+
+message ListMessagesRequest {
+  string chat = 1;   // 为空则用当前打开的会话
+  int32 limit = 2;   // 只取最近 N 条，0 表示全部可见
+}
+
+message ListMessagesResponse {
+  string chat = 1;
+  repeated Message messages = 2;
+  // 会话类型：friend / group / official / service / unknown
+  string chat_type = 3;
+  // 群聊成员数（聊天头部形如 "名称(14)"）；非群聊为 0
+  int32 member_count = 4;
+}
+
+message WatchMessagesRequest {
+  // 留空 = **全局监听**：轮询会话列表的预览变化，覆盖所有会话，
+  //        且完全不打开任何会话（不动界面、不清未读）。
+  //        代价：只能拿到预览文本（可能被截断），preview_only=true。
+  // 指定 = 单会话精细监听：能拿到完整正文，但服务端会保持该会话打开。
+  string chat = 1;
+}
+
+message MessageEvent {
+  string chat = 1;
+  repeated Message added = 2;
+  int64 at_unix_ms = 3;
+  // 该会话当前的未读总数（全局监听模式按会话逐个推送时带上）。
+  // 轮询无法保证一条不漏：若一个轮询周期内到达多条，预览只反映最后一条。
+  // 客户端可用它判断「实际新增了几条」，必要时再调 ListMessages 取详情。
+  int32 unread = 4;
+}
+
+message SendTextRequest {
+  string chat = 1;   // 目标会话；为空则用当前会话
+  string text = 2;
+}
+
+message SendResult {
+  bool ok = 1;
+  string detail = 2;
+}
+
+message InvokeMessageRequest {
+  string chat = 1;    // 为空则用当前会话
+  int32 index = 2;   // 消息序号，来自 ListMessages 返回的 index
+  string action = 3; // 复制 / 转发... / 收藏 / 引用 / 提醒 / 翻译 / 多选
+}
+
+message InvokeMessageResult {
+  bool ok = 1;
+  string detail = 2;
+  // 复制类动作的结果（服务端从剪贴板取回的正文）
+  string text = 3;
+}
+
+message GetBadgesRequest {}
+
+message NavBadge {
+  string label = 1;       // 导航项名称，如 "微信"
+  bool has_badge = 2;     // 该图标右上角是否有徽标
+  int32 red_pixels = 3;   // 命中的红色像素数，排障用
+  int32 area_pixels = 4;  // 采样区域总像素
+}
+
+message GetBadgesResponse {
+  repeated NavBadge badges = 1;
+  // 以下由 ListChats 的结构化未读数推导，不是 OCR
+  int32 unread_chats = 2;     // 有未读的会话数
+  int32 unread_messages = 3;  // 未读消息总数
+}
+
+// ---------------------------------------------------------------------------
+// 逃生舱
+// ---------------------------------------------------------------------------
+message DumpA11yTreeRequest {
+  optional bool only_visible = 1;
+  optional int32 max_depth = 2;
+}
+
+message A11yNode {
+  int32 depth = 1;
+  string role = 2;
+  string name = 3;
+  string text = 4;
+  repeated string states = 5;
+}
+
+message DumpA11yTreeResponse {
+  repeated A11yNode nodes = 1;
+}
+
+message InvokeNodeRequest {
+  string role = 1;   // 角色子串，如 "push button"
+  string name = 2;   // 名字子串，如 "登录"
+}
+
+message InvokeNodeResponse {
+  bool ok = 1;
+  string detail = 2;   // 命中节点的角色/名字/位置，便于排障
+}

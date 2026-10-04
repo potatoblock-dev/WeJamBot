@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wejambot"
+version = "0.1.0"
+description = "WeChat Linux 自动化：经 gRPC 读写会话与消息，不用 OCR、不用输入法"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "grpcio>=1.60",
+    "protobuf>=4.25",
+    "qrcode>=7.4",
+]
+
+[project.scripts]
+wejam = "wejam.cli:main"
+
+# stub 由 scripts/gen-proto.sh 生成，作为独立包一起安装
+[tool.setuptools]
+packages = [
+    "wejam",
+    "wejam.v1",
+]
