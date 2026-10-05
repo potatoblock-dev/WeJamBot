@@ -9,7 +9,7 @@ NAME ?= wejam-session
 IMAGE ?= wejam/wechat:latest
 
 .DEFAULT_GOAL := help
-.PHONY: help proto proto-check build up down logs shell status test test-docs test-concurrency clean
+.PHONY: help proto proto-check build up down logs shell status test test-docs test-concurrency test-bot clean
 
 help:  ## 显示所有可用任务
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -42,6 +42,9 @@ status:  ## 查看服务与微信状态
 	$(PYTHON) -m wejam.cli status
 
 # ---------- 测试 ----------
+test-bot:  ## 宿主闲聊 bot 单测（不需要已登录微信）
+	$(PYTHON) -m pytest tests/test_bot_*.py -q
+
 test: test-docs test-concurrency  ## 跑全部活体检查
 
 test-docs:  ## 检查文档里的示例是否真能跑

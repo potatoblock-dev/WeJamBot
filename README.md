@@ -360,17 +360,48 @@ python tests/check_concurrency.py
 它会并发发多条消息再回读逐字比对。**验证过这个测试不是空转**：
 把锁临时改成空操作后，同样的用例会失败（消息被键码交错污染）。
 
+## 宿主闲聊 Bot（文本第一版）
+
+`wejam/` 是微信驱动；`bot/` 是跑在宿主上的闲聊脑（人设、印象、回复策略、PyQt 控制台）。**不改** `agent/` 与 proto。容器仍用 `bash docker/run.sh`。
+
+```
+微信容器 :7700  →  wejam.Client  →  bot.runner  →  LLM
+                                      ↑
+                               bot.admin 控制台
+```
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[bot]"
+cp .env.example .env   # 填 LLM_API_KEY
+./scripts/start-bot.sh
+./scripts/start-admin.sh
+```
+
+控制台页：运行（启停 runner）、登录（二维码 / 一键登录）、Bot（会话白名单与群发言模式）、API（`.env`）、人设、回复策略、印象。
+
+能力边界：
+
+- 全局 `watch_messages()` 只有会话预览，可能被截断；一轮多条时可能只看到最后一条。
+- 只能 `SendText`。模型若输出 `[[sticker:id]]` 会被剥掉。
+- 白名单为空则不回复（默认仅「文件传输助手」）。微信没有官方 @：点名看 `reply_policy.toml` 的 `bot_names`。
+- `.env`、`data/` 不入库。
+
+单测（不需要已登录微信）：`make test-bot`
+
 ## 目录
 
 ```
 proto/wejam/v1/wejam.proto   gRPC 契约（唯一的接口真相）
 agent/                       服务端，容器内运行：无障碍、几何映射、状态机、消息解析
 wejam/                       宿主侧客户端库 + CLI（wejam/v1/ 是**入库**的生成 stub）
+bot/                         宿主闲聊脑 + PyQt 控制台（人设 / 印象 / 策略）
 docker/                      Dockerfile 与入口脚本
 docs/                        VitePress 文档站
-examples/                    可运行示例
-tests/                       活体集成检查（需要已登录的微信）
-scripts/                     构建与运维脚本（gen-proto / migrate-to-volume）
+examples/                    可运行示例（含 examples/personas/default）
+tests/                       活体集成检查 + test_bot_*.py 单测
+scripts/                     构建与运维脚本（含 start-bot / start-admin）
 tools/                       宿主侧调试小工具（xctl / xgrab）
 ```
 
