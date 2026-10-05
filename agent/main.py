@@ -249,6 +249,10 @@ class WeJamServicer(wejam_pb2_grpc.WeJamServicer):
         ok, detail, text = message_actions.invoke(request.chat, request.index, request.action)
         return wejam_pb2.InvokeMessageResult(ok=ok, detail=detail, text=text)
 
+    def GetMessageSender(self, request, context):
+        ok, name, fields, detail = message_actions.sender_of(request.chat, request.index)
+        return wejam_pb2.MessageSender(ok=ok, name=name, fields=fields, detail=detail)
+
     def GetBadges(self, request, context):
         items, unread_chats, unread_msgs = badges.scan_badges()
         return wejam_pb2.GetBadgesResponse(

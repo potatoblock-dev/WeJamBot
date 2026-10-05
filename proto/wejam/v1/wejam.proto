@@ -35,6 +35,10 @@ service WeJam {
   // 对某条消息执行右键菜单动作（复制 / 转发 / 收藏 / 引用 / 提醒 / 翻译 / 多选）。
   // 删除与撤回属于危险动作，服务端默认拒绝。
   rpc InvokeMessage(InvokeMessageRequest) returns (InvokeMessageResult);
+  // 取某条消息的发送者（群昵称）。
+  // 消息列表项在无障碍树里没有发送者节点，服务端通过「点发送者头像 →
+  // 读资料卡」获得。每次约 1.5~2 秒，适合按需查询而非整屏批量。
+  rpc GetMessageSender(GetMessageSenderRequest) returns (MessageSender);
 
   // ---- 未读徽标 ----
   // 说明：导航图标上的「小红点/数字徽标」是**绘制装饰**，不在无障碍树里。
@@ -187,6 +191,18 @@ message InvokeMessageRequest {
   string chat = 1;    // 为空则用当前会话
   int32 index = 2;   // 消息序号，来自 ListMessages 返回的 index
   string action = 3; // 复制 / 转发... / 收藏 / 引用 / 提醒 / 翻译 / 多选
+}
+
+message GetMessageSenderRequest {
+  string chat = 1;
+  int32 index = 2;
+}
+
+message MessageSender {
+  bool ok = 1;
+  string name = 2;              // 群昵称
+  repeated string fields = 3;   // 资料卡上的其他信息（地区、来源…）
+  string detail = 4;
 }
 
 message InvokeMessageResult {

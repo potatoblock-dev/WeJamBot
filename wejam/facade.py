@@ -164,6 +164,11 @@ class WeChat:
         r = self._c.invoke_message(chat or "", index, "复制")
         return r.text if r.ok else ""
 
+    def sender_of(self, index, chat=None) -> str:
+        """某条消息的发送者（群昵称）。约 1.5~2 秒/次。"""
+        r = self._c.message_sender(chat or "", index)
+        return r.name if r.ok else ""
+
     def message_action(self, index, action, chat=None) -> tuple:
         """对第 index 条消息执行右键菜单动作。"""
         r = self._c.invoke_message(chat or "", index, action)

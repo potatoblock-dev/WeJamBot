@@ -87,6 +87,11 @@ class WeJamStub:
                 request_serializer=wejam_dot_v1_dot_wejam__pb2.InvokeMessageRequest.SerializeToString,
                 response_deserializer=wejam_dot_v1_dot_wejam__pb2.InvokeMessageResult.FromString,
                 _registered_method=True)
+        self.GetMessageSender = channel.unary_unary(
+                '/wejam.v1.WeJam/GetMessageSender',
+                request_serializer=wejam_dot_v1_dot_wejam__pb2.GetMessageSenderRequest.SerializeToString,
+                response_deserializer=wejam_dot_v1_dot_wejam__pb2.MessageSender.FromString,
+                _registered_method=True)
         self.GetBadges = channel.unary_unary(
                 '/wejam.v1.WeJam/GetBadges',
                 request_serializer=wejam_dot_v1_dot_wejam__pb2.GetBadgesRequest.SerializeToString,
@@ -180,6 +185,15 @@ class WeJamServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetMessageSender(self, request, context):
+        """取某条消息的发送者（群昵称）。
+        消息列表项在无障碍树里没有发送者节点，服务端通过「点发送者头像 →
+        读资料卡」获得。每次约 1.5~2 秒，适合按需查询而非整屏批量。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def GetBadges(self, request, context):
         """---- 未读徽标 ----
         说明：导航图标上的「小红点/数字徽标」是**绘制装饰**，不在无障碍树里。
@@ -255,6 +269,11 @@ def add_WeJamServicer_to_server(servicer, server):
                     servicer.InvokeMessage,
                     request_deserializer=wejam_dot_v1_dot_wejam__pb2.InvokeMessageRequest.FromString,
                     response_serializer=wejam_dot_v1_dot_wejam__pb2.InvokeMessageResult.SerializeToString,
+            ),
+            'GetMessageSender': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetMessageSender,
+                    request_deserializer=wejam_dot_v1_dot_wejam__pb2.GetMessageSenderRequest.FromString,
+                    response_serializer=wejam_dot_v1_dot_wejam__pb2.MessageSender.SerializeToString,
             ),
             'GetBadges': grpc.unary_unary_rpc_method_handler(
                     servicer.GetBadges,
@@ -545,6 +564,33 @@ class WeJam:
             '/wejam.v1.WeJam/InvokeMessage',
             wejam_dot_v1_dot_wejam__pb2.InvokeMessageRequest.SerializeToString,
             wejam_dot_v1_dot_wejam__pb2.InvokeMessageResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetMessageSender(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/wejam.v1.WeJam/GetMessageSender',
+            wejam_dot_v1_dot_wejam__pb2.GetMessageSenderRequest.SerializeToString,
+            wejam_dot_v1_dot_wejam__pb2.MessageSender.FromString,
             options,
             channel_credentials,
             insecure,

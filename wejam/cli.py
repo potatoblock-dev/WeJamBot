@@ -203,6 +203,19 @@ def cmd_action(args):
         return 0 if r.ok else 1
 
 
+def cmd_sender(args):
+    """取某条消息的发送者（群昵称）。"""
+    with Client(args.target) as c:
+        r = c.message_sender(args.chat or "", args.index)
+        if r.ok:
+            print(r.name)
+            if r.fields:
+                print("  资料卡: " + " | ".join(r.fields))
+            return 0
+        print("失败:", r.detail)
+        return 1
+
+
 def cmd_tree(args):
     with Client(args.target) as c:
         resp = c.dump_tree(only_visible=not args.all, max_depth=args.depth)
@@ -268,6 +281,11 @@ def main(argv=None):
     p.add_argument("action")
     p.add_argument("--chat", default="")
     p.set_defaults(func=cmd_action)
+
+    p = sub.add_parser("sender", help="取某条消息的发送者（群昵称）")
+    p.add_argument("index", type=int)
+    p.add_argument("--chat", default="")
+    p.set_defaults(func=cmd_sender)
 
     p = sub.add_parser("badges", help="未读徽标（小红点）")
     p.set_defaults(func=cmd_badges)

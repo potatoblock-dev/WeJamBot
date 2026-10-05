@@ -79,6 +79,10 @@ class Client:
         req = wejam_pb2.InvokeMessageRequest(chat=chat, index=index, action=action)
         return self._stub.InvokeMessage(req, timeout=self.timeout)
 
+    def message_sender(self, chat, index):
+        req = wejam_pb2.GetMessageSenderRequest(chat=chat, index=index)
+        return self._stub.GetMessageSender(req, timeout=self.timeout)
+
     def get_badges(self):
         return self._stub.GetBadges(wejam_pb2.GetBadgesRequest(), timeout=self.timeout)
 
