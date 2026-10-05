@@ -74,18 +74,26 @@ def type_text(text):
     if spare is None:
         raise RuntimeError("找不到空闲键码，无法做 Unicode 输入")
 
-    for ch in text:
-        cp = ord(ch)
-        ks = cp if cp < 0x100 else (0x01000000 | cp)
-        d.change_keyboard_mapping(spare, [[ks] * ncols])
+    # 时延实测：原 0.02+0.012+0.03（63ms/字）**大部分是白等**。
+    #   0.010/0.006/0.015 -> 32ms/字 ✅
+    #   0.004/0.003/0.006 -> 14ms/字 ✅
+    #   全零              -> 丢字 ❌
+    # 留一点余量用 18ms/字。注意：丢字是**静默**的，所以调用方必须回读校验，
+    # 见 chat.send_text。
+    try:
+        for ch in text:
+            cp = ord(ch)
+            ks = cp if cp < 0x100 else (0x01000000 | cp)
+            d.change_keyboard_mapping(spare, [[ks] * ncols])
+            d.sync()
+            time.sleep(0.006)
+            xtest.fake_input(d, X.KeyPress, spare)
+            d.sync()
+            time.sleep(0.004)
+            xtest.fake_input(d, X.KeyRelease, spare)
+            d.sync()
+            time.sleep(0.008)
+    finally:
+        # 必须恢复：中途异常也要把那个键码还原，否则它会一直留在映射表里
+        d.change_keyboard_mapping(spare, [[0] * ncols])
         d.sync()
-        time.sleep(0.02)
-        xtest.fake_input(d, X.KeyPress, spare)
-        d.sync()
-        time.sleep(0.012)
-        xtest.fake_input(d, X.KeyRelease, spare)
-        d.sync()
-        time.sleep(0.03)
-
-    d.change_keyboard_mapping(spare, [[0] * ncols])
-    d.sync()
