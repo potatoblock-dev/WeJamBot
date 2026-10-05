@@ -125,10 +125,13 @@ python tests/check_docs_examples.py      # 当前：全部通过
 |---|---|
 | [`examples/quickstart.py`](examples/quickstart.py) | 走一遍全部接口：状态 / 会话 / 读消息 / 发消息 / 徽标 / 逃生舱 |
 | [`examples/echo_bot.py`](examples/echo_bot.py) | 全局监听 + 自动回复的最小机器人（带白名单与防死循环） |
+| [`examples/tour.py`](examples/tour.py) | **能力巡览**：11 项能力逐个真跑，每节附设计说明 |
 
 ```bash
 python examples/quickstart.py     # 接口总览
 python examples/echo_bot.py       # 60 秒监听，只在白名单会话里自动回复
+python examples/tour.py           # 全能力巡览（只读全跑，发送为 dry-run）
+python examples/tour.py --live --chat 文件传输助手   # 含真实发送
 ```
 
 ### 最小机器人
