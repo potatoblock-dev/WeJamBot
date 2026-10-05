@@ -479,20 +479,30 @@ def send_text(chat, text):
     inputmod.click_at(x + w // 2, y + h // 2)
     time.sleep(0.3)
 
-    # 打字是逐字符注入的，快的时候可能**静默丢字**（实测全零延迟时丢过）。
-    # 所以打完必须回读输入框比对，不符就清空重来一次。
-    typed = ""
-    for attempt in range(2):
-        inputmod.type_text(text)
-        time.sleep(0.35)
-        typed = input_text()
-        if typed.strip() == text.strip():
+    # 输入以**剪贴板粘贴**为主、逐字符注入兜底：
+    #   * 多行只能走剪贴板 —— 逐字符注入时 '\n' 的 keysym 就是 Return，
+    #     而 Return 在微信里是「发送」，会把前半句直接发出去；
+    #   * 粘贴是瞬时的，逐字符注入要 19ms/字。
+    # 无论哪条路，打完都**回读比对**：注入失败可能静默丢字。
+    modes = [("剪贴板", inputmod.paste_text)]
+    if "\n" not in text and "\r" not in text:
+        modes.append(("逐字输入", inputmod.type_text))
+
+    typed, ok = "", False
+    for _name, inject in modes:
+        for _ in range(2):
+            inject(text)
+            time.sleep(0.4)
+            typed = input_text()
+            if typed.strip() == text.strip():
+                ok = True
+                break
+            inputmod.clear_input()               # Ctrl+A + 删（退格删不掉换行）
+        if ok:
             break
-        for _ in range(len(typed) + 8):
-            inputmod.tap_key("BackSpace")
-        time.sleep(0.3)
-    else:
-        return False, f"输入框内容与预期不符（第 {attempt+1} 次）：{typed[:40]!r}"
+    if not ok:
+        tried = "、".join(n for n, _ in modes)
+        return False, f"输入失败（试过 {tried}）：输入框得到 {typed[:40]!r}"
     time.sleep(0.3)
 
     for attempt in (1, 2):

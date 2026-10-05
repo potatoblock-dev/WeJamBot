@@ -3,6 +3,7 @@
 坐标一律来自运行时定位（见 geometry.node_physical_rect），本模块只负责
 把已经算好的坐标点下去，不含任何静态坐标。
 """
+import subprocess
 import time
 
 from Xlib import X, display
@@ -97,3 +98,68 @@ def type_text(text):
         # 必须恢复：中途异常也要把那个键码还原，否则它会一直留在映射表里
         d.change_keyboard_mapping(spare, [[0] * ncols])
         d.sync()
+
+
+def _ctrl_key(letter):
+    """按一次 Ctrl+<letter>。"""
+    from Xlib import XK
+    d = display.Display()
+    ctrl = d.keysym_to_keycode(XK.string_to_keysym("Control_L"))
+    key = d.keysym_to_keycode(XK.string_to_keysym(letter))
+    xtest.fake_input(d, X.KeyPress, ctrl)
+    d.sync()
+    xtest.fake_input(d, X.KeyPress, key)
+    d.sync()
+    time.sleep(0.05)
+    xtest.fake_input(d, X.KeyRelease, key)
+    d.sync()
+    xtest.fake_input(d, X.KeyRelease, ctrl)
+    d.sync()
+
+
+@synchronized
+def paste_text(text, settle=0.35):
+    """用剪贴板粘贴文本。
+
+    为什么主力改成剪贴板（而不是逐字符注入键码）：
+
+      * **多行**：逐字符注入时 ord('\\n')=10 就是 Return，而 Return 在微信里
+        是「发送」—— 多行文本会把前半句直接发出去。剪贴板天然没这问题。
+      * **速度**：粘贴是瞬时的，逐字符注入要 19ms/字（500 字就是 9.5 秒）。
+
+    为什么不担心「污染用户的剪贴板」：本工具是**容器原生**的，
+    容器里的 Xvfb 有自己独立的剪贴板，跟宿主完全隔离，也没有剪贴板管理器。
+    只有「不跑容器、直接占用宿主 X」才会碰到用户剪贴板 —— 而那种部署方式
+    本身比这粗暴得多，正是设计要避免的。
+
+    xclip 必须在粘贴完成前一直活着（X11 剪贴板是拥有者模式）。
+    """
+    proc = subprocess.Popen(
+        ["xclip", "-selection", "clipboard", "-i"],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL)
+    try:
+        proc.stdin.write(text.encode("utf-8"))
+        proc.stdin.close()
+        time.sleep(0.15)          # 等内容就绪
+        _ctrl_key("v")
+        time.sleep(settle)        # 等微信取完剪贴板
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except Exception:
+            proc.kill()
+
+
+@synchronized
+def clear_input():
+    """清空输入框。
+
+    必须用 Ctrl+A 全选再删：**逐个退格删不掉换行**（实测残留 '\\n第三行'
+    清不掉，导致下一次输入叠加上去）。
+    """
+    _ctrl_key("a")
+    time.sleep(0.25)
+    tap_key("BackSpace")
+    time.sleep(0.3)
