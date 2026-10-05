@@ -310,14 +310,21 @@ def chat_header_info(chat):
 POPUP_MIN_AREA = 120 * 80      # 弹出层判据：与主窗口不同的可见窗口
 
 def _foreign_windows():
-    """除主窗口外的可见 X11 窗口（菜单 / 对话框 / 设置面板等）。"""
+    """除主窗口外的可见 X11 窗口（菜单 / 对话框 / 设置面板等）。
+
+    主窗口按 **WM_CLASS == 'wechat' 里最大的那个** 来认，不能只按面积取最大：
+    搜一搜窗口（class 为空）可能比主窗口还大，那样主窗口会被当成外来弹层，
+    结果任何操作都拒绝执行 —— 实测踩到过。
+    """
     try:
         wins = geometry.x11_windows()
     except Exception:
         return []
     if len(wins) <= 1:
         return []
-    main = max(wins, key=lambda w: w["w"] * w["h"])
+    wechat = [w for w in wins if (w.get("cls") or "") == "wechat"]
+    pool = wechat or wins
+    main = max(pool, key=lambda w: w["w"] * w["h"])
     return [w for w in wins
             if w["id"] != main["id"] and w["w"] * w["h"] >= POPUP_MIN_AREA]
 
