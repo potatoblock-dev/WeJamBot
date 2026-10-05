@@ -70,6 +70,12 @@ def _read_about_panel():
 DANGEROUS = ("退出", "注销", "清空", "删除", "撤回", "解散")
 
 
+def _safe_escape():
+    """按 Escape 关弹层，并兜住它可能开关出的「退出登录」确认框。"""
+    from .chat import safe_escape
+    return safe_escape()
+
+
 def _click(role, name):
     from . import geometry
     from . import input as inputmod
@@ -97,7 +103,7 @@ def _clear_confirm_dialogs(max_rounds=3):
         if not modal:
             return
         if not _click("push button", "取消"):
-            inputmod.tap_key("Escape")
+            _safe_escape()
         time.sleep(0.8)
 
 
@@ -130,10 +136,10 @@ def _from_gui():
             time.sleep(1.5)
             v = _read_about_panel()
 
-            # 还原：关掉关于面板与设置面板
+            # 还原：关掉关于面板与设置面板。
+            # 注意 Escape 在微信主窗口上是「退出登录」的开关，必须兜住。
             for _ in range(2):
-                inputmod.tap_key("Escape")
-                time.sleep(0.5)
+                _safe_escape()
             _clear_confirm_dialogs()
             return v
         except Exception:

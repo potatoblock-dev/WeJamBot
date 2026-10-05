@@ -127,7 +127,8 @@ def invoke(chat, index, action):
     # 菜单是独立窗口；用无障碍按名字找菜单项
     item = geometry.node_physical_rect("menu item", action)
     if item is None:
-        inputmod.tap_key("Escape")
+        from .chat import safe_escape
+        safe_escape()
         return False, f"菜单里没有 {action!r}（可能消息类型不支持）", ""
     inputmod.click_at(item[0] + item[2] // 2, item[1] + item[3] // 2)
     time.sleep(0.8)
@@ -299,8 +300,8 @@ def sender_of(chat, index):
                 seen.add(t)
                 fields.append(t)
 
-    inputmod.tap_key("Escape")          # 关掉资料卡，恢复原状
-    time.sleep(0.4)
+    from .chat import safe_escape
+    safe_escape()                       # 关掉资料卡（Escape 会开关「退出登录」，已被兜住）
     if not name:
         return False, "", [], "资料卡里没读到名字（可能不是群聊或头像定位失败）"
     return True, name, fields, ""

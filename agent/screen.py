@@ -29,8 +29,12 @@ def capture_root():
 
 
 @synchronized
-def capture_window():
-    """捕获微信主窗口**自身**的内容，忽略盖在它上面的窗口。
+def capture_window(win=None):
+    """捕获窗口**自身**的内容，忽略盖在它上面的窗口。
+
+    默认抓微信主窗口；传入 geometry.x11_windows() 里的某个窗口字典
+    就能抓那个窗口 —— 抓弹出菜单必须这样，因为 Composite 会正确地把
+    菜单从主窗口内容里排除掉（这正是它的价值所在）。
 
     为什么需要它：root 抓取会把盖在上面的弹层一起拍进来。
     对「按颜色找消息气泡」这类分析来说，弹层像素会直接导致**算出错误的
@@ -46,10 +50,16 @@ def capture_window():
         from Xlib.ext.composite import (NameWindowPixmap, RedirectWindow,
                                         RedirectAutomatic, UnredirectWindow)
 
-        winner = _main_window()
-        if winner is None:
-            raise RuntimeError("找不到主窗口")
-        win, g = winner
+        if win is not None:
+            d0 = display.Display()
+            obj = d0.create_resource_object("window", win["id"])
+            g = obj.get_geometry()
+            holder = (obj, g)
+        else:
+            holder = _main_window()
+        if holder is None:
+            raise RuntimeError("找不到窗口")
+        win_obj, g = holder
 
         d = display.Display()
         low = d.display
@@ -57,14 +67,14 @@ def capture_window():
         if op is None:
             raise RuntimeError("无 Composite 扩展")
 
-        RedirectWindow(display=low, opcode=op, window=win, update=RedirectAutomatic)
+        RedirectWindow(display=low, opcode=op, window=win_obj, update=RedirectAutomatic)
         d.sync()
         # 协议本身只要几毫秒；实测固定 sleep 曾占到 400ms 中的 400ms。
         # 留一点余量等重定向生效，但不做无谓等待。
         time.sleep(0.03)
         try:
             pid = low.allocate_resource_id()
-            NameWindowPixmap(display=low, opcode=op, window=win, pixmap=pid)
+            NameWindowPixmap(display=low, opcode=op, window=win_obj, pixmap=pid)
             d.sync()
             time.sleep(0.02)
             pix = d.create_resource_object("pixmap", pid)
@@ -78,7 +88,7 @@ def capture_window():
                                   data[: g.width * g.height * bpp], "raw", rawmode)
             return img, (g.x, g.y)
         finally:
-            UnredirectWindow(display=low, opcode=op, window=win,
+            UnredirectWindow(display=low, opcode=op, window=win_obj,
                              update=RedirectAutomatic)
             d.sync()
     except Exception:

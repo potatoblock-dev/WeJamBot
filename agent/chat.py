@@ -307,6 +307,46 @@ def chat_header_info(chat):
     return info
 
 
+# ---------------------------------------------------------------------------
+# Escape 是**危险键**
+#
+# 实测：在微信主窗口上按 Escape 会弹出「退出登录后将无法收到新消息，确定退出登录？」
+# 确认框，再按一次又收起 —— 它是个开关。整场调试中反复冒出来的退出登录框，
+# 根因就是各处用 Escape 关弹层。
+#
+# 所以按 Escape 之后必须立刻检查并点「取消」，绝不能假定它只是「关闭」。
+# ---------------------------------------------------------------------------
+LOGOUT_W, LOGOUT_H = 294, 177      # 退出登录确认框的窗口尺寸（实测）
+
+
+def logout_dialog_open():
+    """退出登录确认框是否开着。"""
+    for w in geometry.x11_windows():
+        if abs(w["w"] - LOGOUT_W) <= 6 and abs(w["h"] - LOGOUT_H) <= 6:
+            return True
+    return False
+
+
+def dismiss_logout_dialog():
+    """点「取消」关掉退出登录确认框。返回是否关掉了。"""
+    if not logout_dialog_open():
+        return False
+    r = geometry.node_physical_rect("push button", "取消")
+    if r is None:
+        return False
+    inputmod.click_at(r[0] + r[2] // 2, r[1] + r[3] // 2)
+    time.sleep(0.4)
+    return not logout_dialog_open()
+
+
+def safe_escape():
+    """按 Escape 关弹层，但兜住它可能触发的退出登录框。"""
+    inputmod.tap_key("Escape")
+    time.sleep(0.45)
+    if logout_dialog_open():
+        dismiss_logout_dialog()
+
+
 POPUP_MIN_AREA = 120 * 80      # 弹出层判据：与主窗口不同的可见窗口
 
 def _foreign_windows():
@@ -336,13 +376,11 @@ def _popup_guard():
     X 会把点击投递给最顶层窗口 —— 于是「点会话列表」会打到弹层上的某个位置。
     实测就是这样从设置面板里点到过「退出登录」。
     """
-    from . import input as inputmod
     extra = _foreign_windows()
     if not extra:
         return None
     for _ in range(2):                       # 先试着用 Esc 关掉
-        inputmod.tap_key("Escape")
-        time.sleep(0.5)
+        safe_escape()                        # Escape 会开关「退出登录」，必须兜住
         extra = _foreign_windows()
         if not extra:
             return None
