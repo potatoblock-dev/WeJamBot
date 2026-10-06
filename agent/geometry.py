@@ -141,6 +141,10 @@ def find_node(role_needle, name_needle, want_visible=True):
     return loose[0] if loose else (None, None)
 
 
+# global_transform 的缓存：键是「所有 X11 窗口的几何」，任一窗口移动/缩放就失效。
+_TRANSFORM_CACHE = {}
+
+
 @synchronized
 def global_transform():
     """从一次成功的 frame↔窗口配对推出全局 a11y→物理 变换 (sx, ox, sy, oy)。
@@ -148,19 +152,33 @@ def global_transform():
     GTK 的 a11y 坐标与 X11 物理坐标之间是纯缩放关系（实测偏移≈0）。
     菜单这类弹出层在 a11y 里没有 frame 祖先，按 frame 做比例映射会失效，
     这时就用这个全局变换兜底。
+
+    **缓存**：算一次要 pair_frames_with_windows()，也就是枚举所有 a11y 帧
+    （实测 567ms），而它只在**窗口移动或缩放**时才变 —— 移动窗口是我们自己
+    干的。所以拿便宜的 X11 窗口几何（2ms）当失效判据：任一窗口的位置或
+    尺寸变了，键就变了，自动重算。
     """
+    wins = x11_windows()
+    key = tuple(sorted((w["id"], w["x"], w["y"], w["w"], w["h"]) for w in wins))
+    if _TRANSFORM_CACHE.get("key") == key:
+        return _TRANSFORM_CACHE.get("value")
+
     pairs = pair_frames_with_windows()
     if not pairs:
+        _TRANSFORM_CACHE.update(key=key, value=None)
         return None
     # 取面积最大的那对（主窗口）最稳
     f, w, _score = max(pairs, key=lambda p: p[0]["w"] * p[0]["h"])
     if f["w"] <= 1 or f["h"] <= 1:
+        _TRANSFORM_CACHE.update(key=key, value=None)
         return None
     sx = w["w"] / f["w"]
     sy = w["h"] / f["h"]
     ox = w["x"] - f["x"] * sx
     oy = w["y"] - f["y"] * sy
-    return sx, ox, sy, oy
+    val = (sx, ox, sy, oy)
+    _TRANSFORM_CACHE.update(key=key, value=val)
+    return val
 
 
 @synchronized
