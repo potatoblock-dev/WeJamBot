@@ -83,6 +83,15 @@ class Client:
         req = wejam_pb2.GetMessageSenderRequest(chat=chat, index=index)
         return self._stub.GetMessageSender(req, timeout=self.timeout)
 
+    def list_windows(self):
+        return self._stub.ListWindows(wejam_pb2.ListWindowsRequest(), timeout=self.timeout)
+
+    def open_window(self, chat):
+        return self._stub.OpenWindow(wejam_pb2.OpenWindowRequest(chat=chat), timeout=self.timeout)
+
+    def close_window(self, chat):
+        return self._stub.CloseWindow(wejam_pb2.CloseWindowRequest(chat=chat), timeout=self.timeout)
+
     def get_badges(self):
         return self._stub.GetBadges(wejam_pb2.GetBadgesRequest(), timeout=self.timeout)
 

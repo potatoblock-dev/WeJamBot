@@ -220,29 +220,12 @@ def _message_items():
     return out
 
 
-@synchronized
-def list_messages(chat="", limit=0):
-    """解析指定会话的消息列表。
+def _parse_messages(chat, items, offset=0):
+    """把消息列表项的原始文本解析成消息字典。
 
-    若指定了 chat 且它不是当前打开的会话，会先打开它 —— 微信的界面
-    一次只渲染一个会话，不先打开就读不到。这是读取的必要前置动作。
+    offset 是这些项在**完整列表**里的起始下标 —— index 必须是绝对位置，
+    因为消息级操作（右键复制等）会按绝对位置取节点。
     """
-    if chat and chat != current_chat():
-        ok, detail = open_chat(chat)
-        if not ok:
-            # 绝不能忽略失败：否则会把「当前会话」的消息贴上目标会话名返回，
-            # 调用方据此操作就可能在错误的会话里发消息。
-            raise RuntimeError(f"打开会话 {chat!r} 失败：{detail}")
-    chat = chat or current_chat()
-    items = _wait_message_list()
-    # index 必须是**绝对位置**：它会用于后续的消息级操作（右键复制等），
-    # 而 bubble_rect 按绝对位置取节点。这里若用截断后的序号，limit 一小于
-    # 总数就会错位 —— 表现为「操作到了另一条消息」，实测踩到过。
-    offset = 0
-    if limit and len(items) > limit:
-        offset = len(items) - limit
-        items = items[offset:]
-
     messages = []
     bucket = ""          # 最近一个时间分隔，作为消息的时间归属
     seen_in_bucket = {}  # 同一时间桶内同文消息的去重计数
@@ -278,6 +261,45 @@ def list_messages(chat="", limit=0):
             "kind": kind, "index": idx,
             "content_type": classify_content(text) if kind == "TEXT" else "system",
         })
+    return messages
+
+
+@synchronized
+def list_messages(chat="", limit=0):
+    """解析指定会话的消息列表。
+
+    若指定了 chat 且它不是当前打开的会话，会先打开它 —— 微信的界面
+    一次只渲染一个会话，不先打开就读不到。这是读取的必要前置动作。
+    """
+    # 该会话已经在**独立窗口**里 → 直接读它，不切换主窗口，
+    # 省下切换会话的 3~7 秒。读取不依赖键盘焦点，所以可以和其他窗口并行。
+    if chat:
+        try:
+            from . import windows as winmod
+            if chat in winmod.list_open():
+                got = winmod.read_messages(chat, limit)
+                if got is not None:
+                    return chat, got
+        except Exception:
+            pass
+
+    if chat and chat != current_chat():
+        ok, detail = open_chat(chat)
+        if not ok:
+            # 绝不能忽略失败：否则会把「当前会话」的消息贴上目标会话名返回，
+            # 调用方据此操作就可能在错误的会话里发消息。
+            raise RuntimeError(f"打开会话 {chat!r} 失败：{detail}")
+    chat = chat or current_chat()
+    items = _wait_message_list()
+    # index 必须是**绝对位置**：它会用于后续的消息级操作（右键复制等），
+    # 而 bubble_rect 按绝对位置取节点。这里若用截断后的序号，limit 一小于
+    # 总数就会错位 —— 表现为「操作到了另一条消息」，实测踩到过。
+    offset = 0
+    if limit and len(items) > limit:
+        offset = len(items) - limit
+        items = items[offset:]
+
+    messages = _parse_messages(chat, items, offset)
     return chat, messages
 
 
@@ -464,19 +486,42 @@ def send_text(chat, text):
     if blocked:
         return False, blocked
 
-    if chat:
-        ok, detail = open_chat(chat)
-        if not ok:
-            return False, detail
-
     target = chat or current_chat()
 
-    # 定位输入框并聚焦（用比例映射，无静态坐标）
-    rect = geometry.node_physical_rect("text", target)
-    if rect is None:
-        return False, "找不到输入框"
-    x, y, w, h = rect
-    inputmod.click_at(x + w // 2, y + h // 2)
+    # 会话已经在**独立窗口**里 → 直接点它的输入框，不切换主窗口，
+    # 省下切换会话的 3~7 秒。
+    # ⚠️ 写入仍然必须串行：X11 只有一个键盘焦点，实测用 XSendEvent 想绕过
+    #    焦点直接投递给目标窗口也不行（应用按自己的焦点状态路由）。
+    focused = False
+    if chat:
+        try:
+            from . import windows as winmod
+            if chat in winmod.list_open():
+                node = winmod.input_box(chat)
+                if node is not None:
+                    import pyatspi
+                    e = node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+                    t = geometry.global_transform()
+                    if t is not None:
+                        sx, ox, sy, oy = t
+                        bx, by = int(e.x * sx + ox), int(e.y * sy + oy)
+                        bw, bh = int(e.width * sx), int(e.height * sy)
+                        inputmod.click_at(bx + bw // 2, by + bh // 2)
+                        focused = True
+        except Exception:
+            focused = False
+
+    if not focused:
+        if chat:
+            ok, detail = open_chat(chat)
+            if not ok:
+                return False, detail
+        # 定位输入框并聚焦（用比例映射，无静态坐标）
+        rect = geometry.node_physical_rect("text", target)
+        if rect is None:
+            return False, "找不到输入框"
+        x, y, w, h = rect
+        inputmod.click_at(x + w // 2, y + h // 2)
     time.sleep(0.3)
 
     # 输入以**剪贴板粘贴**为主、逐字符注入兜底：

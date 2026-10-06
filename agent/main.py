@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.normpath(os.path.join(_HERE, "..")))
 
 from wejam.v1 import wejam_pb2, wejam_pb2_grpc  # noqa: E402
 
-from . import accessibility, badges, chat, geometry, login, message_actions, selflog, wechat_info  # noqa: E402
+from . import accessibility, badges, chat, geometry, login, message_actions, selflog, wechat_info, windows  # noqa: E402
 from . import input as inputmod  # noqa: E402
 
 PORT = int(os.environ.get("WEJAM_PORT", "7700"))
@@ -252,6 +252,17 @@ class WeJamServicer(wejam_pb2_grpc.WeJamServicer):
     def GetMessageSender(self, request, context):
         ok, name, fields, detail = message_actions.sender_of(request.chat, request.index)
         return wejam_pb2.MessageSender(ok=ok, name=name, fields=fields, detail=detail)
+
+    def ListWindows(self, request, context):
+        return wejam_pb2.ListWindowsResponse(chats=windows.list_open())
+
+    def OpenWindow(self, request, context):
+        ok, detail = windows.open(request.chat)
+        return wejam_pb2.WindowResult(ok=ok, detail=detail)
+
+    def CloseWindow(self, request, context):
+        ok, detail = windows.close(request.chat)
+        return wejam_pb2.WindowResult(ok=ok, detail=detail)
 
     def GetBadges(self, request, context):
         items, unread_chats, unread_msgs = badges.scan_badges()

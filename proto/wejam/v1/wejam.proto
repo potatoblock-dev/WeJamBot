@@ -46,6 +46,14 @@ service WeJam {
   // 徽标里的数字不 OCR 读不到，但会话级未读数可由 ListChats 精确获得。
   rpc GetBadges(GetBadgesRequest) returns (GetBadgesResponse);
 
+  // ---- 独立聊天窗口 ----
+  // 把会话开进自己的窗口。价值：主窗口里切换会话要 3~7 秒，而会话已经在
+  // 眼前时只要 0.7~1 秒。**读取可以多窗口并行**（a11y 不依赖焦点），
+  // 但**写入仍然串行** —— X11 只有一个键盘焦点。
+  rpc ListWindows(ListWindowsRequest) returns (ListWindowsResponse);
+  rpc OpenWindow(OpenWindowRequest) returns (WindowResult);
+  rpc CloseWindow(CloseWindowRequest) returns (WindowResult);
+
   // ---- 逃生舱：给需要深度定制的客户端，默认可由服务开关关闭 ----
   rpc DumpA11yTree(DumpA11yTreeRequest) returns (DumpA11yTreeResponse);
   rpc InvokeNode(InvokeNodeRequest) returns (InvokeNodeResponse);
@@ -210,6 +218,25 @@ message InvokeMessageResult {
   string detail = 2;
   // 复制类动作的结果（服务端从剪贴板取回的正文）
   string text = 3;
+}
+
+message ListWindowsRequest {}
+
+message ListWindowsResponse {
+  repeated string chats = 1;   // 已开独立窗口的会话名（frame 名字即会话名）
+}
+
+message OpenWindowRequest {
+  string chat = 1;
+}
+
+message CloseWindowRequest {
+  string chat = 1;
+}
+
+message WindowResult {
+  bool ok = 1;
+  string detail = 2;
 }
 
 message GetBadgesRequest {}

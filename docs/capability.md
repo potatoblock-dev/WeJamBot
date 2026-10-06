@@ -22,6 +22,7 @@ wxauto(x4) 基于 **Windows UIAutomation**，对每个 UI 元素都有细粒度�
 | 登录状态 / 二维码内容 | `wx.login_state()` / `wx.qr_code()` |
 | 消息右键动作（复制 / 转发 / 收藏 / 引用 / 提醒 / 翻译 / 多选） | `wx.copy_message()` / `wx.message_action()` |
 | 群聊消息的发送者（群昵称） | `wx.sender_of()` |
+| 独立聊天窗口（常驻会话，免切换） | `wx.open_window()` / `wx.windows()` |
 | 逃生舱：节点树 / 按名点击 | `wx.tree()` / `wx.click_node()` |
 
 ## ⚠️ 部分支持

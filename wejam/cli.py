@@ -216,6 +216,21 @@ def cmd_sender(args):
         return 1
 
 
+def cmd_window(args):
+    """独立聊天窗口：开/关/列。"""
+    with Client(args.target) as c:
+        if args.action == "list":
+            ws = list(c.list_windows().chats)
+            print("独立窗口:", ws if ws else "（无）")
+            return 0
+        if args.action == "open":
+            r = c.open_window(args.chat)
+        else:
+            r = c.close_window(args.chat)
+        print(("✅ " if r.ok else "❌ ") + r.detail)
+        return 0 if r.ok else 1
+
+
 def cmd_tree(args):
     with Client(args.target) as c:
         resp = c.dump_tree(only_visible=not args.all, max_depth=args.depth)
@@ -289,6 +304,11 @@ def main(argv=None):
 
     p = sub.add_parser("badges", help="未读徽标（小红点）")
     p.set_defaults(func=cmd_badges)
+
+    p = sub.add_parser("window", help="独立聊天窗口（open/close/list）")
+    p.add_argument("action", choices=["open", "close", "list"])
+    p.add_argument("chat", nargs="?", default="")
+    p.set_defaults(func=cmd_window)
 
     p = sub.add_parser("tree", help="[逃生舱] dump 无障碍节点树")
     p.add_argument("--all", action="store_true", help="含不可见节点")

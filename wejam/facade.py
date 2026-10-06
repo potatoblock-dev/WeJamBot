@@ -174,6 +174,18 @@ class WeChat:
         r = self._c.invoke_message(chat or "", index, action)
         return bool(r.ok), r.detail
 
+    # ---------- 独立窗口 ----------
+    def open_window(self, chat) -> bool:
+        """把会话开进独立窗口（省掉以后每次切换会话的 3~7 秒）。"""
+        return bool(self._c.open_window(chat).ok)
+
+    def close_window(self, chat) -> bool:
+        return bool(self._c.close_window(chat).ok)
+
+    def windows(self) -> list:
+        """已开独立窗口的会话名。"""
+        return list(self._c.list_windows().chats)
+
     # ---------- 逃生舱 ----------
     def tree(self, only_visible=True, max_depth=45):
         return self._c.dump_tree(only_visible=only_visible, max_depth=max_depth)

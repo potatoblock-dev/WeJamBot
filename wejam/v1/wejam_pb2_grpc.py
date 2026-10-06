@@ -97,6 +97,21 @@ class WeJamStub:
                 request_serializer=wejam_dot_v1_dot_wejam__pb2.GetBadgesRequest.SerializeToString,
                 response_deserializer=wejam_dot_v1_dot_wejam__pb2.GetBadgesResponse.FromString,
                 _registered_method=True)
+        self.ListWindows = channel.unary_unary(
+                '/wejam.v1.WeJam/ListWindows',
+                request_serializer=wejam_dot_v1_dot_wejam__pb2.ListWindowsRequest.SerializeToString,
+                response_deserializer=wejam_dot_v1_dot_wejam__pb2.ListWindowsResponse.FromString,
+                _registered_method=True)
+        self.OpenWindow = channel.unary_unary(
+                '/wejam.v1.WeJam/OpenWindow',
+                request_serializer=wejam_dot_v1_dot_wejam__pb2.OpenWindowRequest.SerializeToString,
+                response_deserializer=wejam_dot_v1_dot_wejam__pb2.WindowResult.FromString,
+                _registered_method=True)
+        self.CloseWindow = channel.unary_unary(
+                '/wejam.v1.WeJam/CloseWindow',
+                request_serializer=wejam_dot_v1_dot_wejam__pb2.CloseWindowRequest.SerializeToString,
+                response_deserializer=wejam_dot_v1_dot_wejam__pb2.WindowResult.FromString,
+                _registered_method=True)
         self.DumpA11yTree = channel.unary_unary(
                 '/wejam.v1.WeJam/DumpA11yTree',
                 request_serializer=wejam_dot_v1_dot_wejam__pb2.DumpA11yTreeRequest.SerializeToString,
@@ -204,6 +219,28 @@ class WeJamServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListWindows(self, request, context):
+        """---- 独立聊天窗口 ----
+        把会话开进自己的窗口。价值：主窗口里切换会话要 3~7 秒，而会话已经在
+        眼前时只要 0.7~1 秒。**读取可以多窗口并行**（a11y 不依赖焦点），
+        但**写入仍然串行** —— X11 只有一个键盘焦点。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def OpenWindow(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CloseWindow(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def DumpA11yTree(self, request, context):
         """---- 逃生舱：给需要深度定制的客户端，默认可由服务开关关闭 ----
         """
@@ -279,6 +316,21 @@ def add_WeJamServicer_to_server(servicer, server):
                     servicer.GetBadges,
                     request_deserializer=wejam_dot_v1_dot_wejam__pb2.GetBadgesRequest.FromString,
                     response_serializer=wejam_dot_v1_dot_wejam__pb2.GetBadgesResponse.SerializeToString,
+            ),
+            'ListWindows': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListWindows,
+                    request_deserializer=wejam_dot_v1_dot_wejam__pb2.ListWindowsRequest.FromString,
+                    response_serializer=wejam_dot_v1_dot_wejam__pb2.ListWindowsResponse.SerializeToString,
+            ),
+            'OpenWindow': grpc.unary_unary_rpc_method_handler(
+                    servicer.OpenWindow,
+                    request_deserializer=wejam_dot_v1_dot_wejam__pb2.OpenWindowRequest.FromString,
+                    response_serializer=wejam_dot_v1_dot_wejam__pb2.WindowResult.SerializeToString,
+            ),
+            'CloseWindow': grpc.unary_unary_rpc_method_handler(
+                    servicer.CloseWindow,
+                    request_deserializer=wejam_dot_v1_dot_wejam__pb2.CloseWindowRequest.FromString,
+                    response_serializer=wejam_dot_v1_dot_wejam__pb2.WindowResult.SerializeToString,
             ),
             'DumpA11yTree': grpc.unary_unary_rpc_method_handler(
                     servicer.DumpA11yTree,
@@ -618,6 +670,87 @@ class WeJam:
             '/wejam.v1.WeJam/GetBadges',
             wejam_dot_v1_dot_wejam__pb2.GetBadgesRequest.SerializeToString,
             wejam_dot_v1_dot_wejam__pb2.GetBadgesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListWindows(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/wejam.v1.WeJam/ListWindows',
+            wejam_dot_v1_dot_wejam__pb2.ListWindowsRequest.SerializeToString,
+            wejam_dot_v1_dot_wejam__pb2.ListWindowsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def OpenWindow(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/wejam.v1.WeJam/OpenWindow',
+            wejam_dot_v1_dot_wejam__pb2.OpenWindowRequest.SerializeToString,
+            wejam_dot_v1_dot_wejam__pb2.WindowResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CloseWindow(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/wejam.v1.WeJam/CloseWindow',
+            wejam_dot_v1_dot_wejam__pb2.CloseWindowRequest.SerializeToString,
+            wejam_dot_v1_dot_wejam__pb2.WindowResult.FromString,
             options,
             channel_credentials,
             insecure,
