@@ -54,6 +54,8 @@ class Settings:
     allow_chats_path: Path
     wejam_target: str
     bot_name: str
+    coalesce_burst_seconds: float
+    coalesce_debounce_seconds: float
 
 
 def load_settings() -> Settings:
@@ -81,4 +83,6 @@ def load_settings() -> Settings:
         ),
         wejam_target=_env("WEJAM_TARGET", "127.0.0.1:7700"),
         bot_name=_env("BOT_NAME", "bot"),
+        coalesce_burst_seconds=_env_float("COALESCE_BURST_SECONDS", 30.0),
+        coalesce_debounce_seconds=_env_float("COALESCE_DEBOUNCE_SECONDS", 3.0),
     )

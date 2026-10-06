@@ -36,7 +36,7 @@ class ChatBot:
         self._sender = sender
 
     def bind_sender(self, sender: TextSender) -> None:
-        """Attach the live wejam send wrapper for this connection."""
+        """Attach TextSender backed by WeJamHands for this connection."""
         self._sender = sender
 
     async def handle(self, message: IncomingTurn) -> None:
@@ -59,6 +59,7 @@ class ChatBot:
             return
         if message.is_group:
             user_text = f"[群友] {message.username}\n{user_text}"
+        _log.info("正在回复 session=%s user=%s", message.session_id, message.username)
         history = self._memory.history(message.session_id)
         profile = self._impressions.touch(message.impression_key, username=message.username)
         speaker = str(profile.get("username") or message.username)
@@ -80,10 +81,12 @@ class ChatBot:
         if self._sender is None:
             _log.warning("no sender bound; skipping send session=%s", message.session_id)
             return
+        _log.info("正在发送 session=%s", message.session_id)
         delivered = self._sender.send_bubbles(message.chat, reply)
         if not delivered:
             _log.warning("reply not delivered session=%s", message.session_id)
             return
+        _log.info("replied session=%s preview=%r", message.session_id, reply[:80])
         now = time.time()
         self._gate.note_bot_reply(message.session_id, now)
         policy = self._gate.current()

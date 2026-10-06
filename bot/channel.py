@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class IncomingTurn:
-    """One inbound WeChat line the chat brain can handle."""
+    """One inbound WeChat line (0x01 IncomingMessage analogue; text only)."""
 
     chat: str
     sender: str

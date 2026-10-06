@@ -1,6 +1,8 @@
-# WeJamBot
+# WeJamBot（0x02）
 
-把微信 Linux 版跑进容器，通过 **gRPC** 对外提供「读会话 / 读消息 / 发消息」的能力。
+微信侧产品仓：**0x01 文本闲聊脑 + WeJam 眼睛/手**。上游驱动仍见 [Potatoblock-Dev/WeJamBot](https://github.com/Potatoblock-Dev/WeJamBot)；QQ 官方机器人脑仍是 [baitang-bt/0x01](https://github.com/baitang-bt/0x01)。本仓推送到 [Potatoblock-Dev/WeJambBot_0x02](https://github.com/Potatoblock-Dev/WeJambBot_0x02)。
+
+把微信 Linux 版跑进容器（Docker Desktop 虚拟桌面 + Xvfb），通过 **gRPC** 对外提供「读会话 / 读消息 / 发消息」。闲聊脑跑在宿主，**不进容器**。
 
 **不使用 OCR，不使用输入法，不依赖静态坐标。**
 
@@ -360,12 +362,19 @@ python tests/check_concurrency.py
 它会并发发多条消息再回读逐字比对。**验证过这个测试不是空转**：
 把锁临时改成空操作后，同样的用例会失败（消息被键码交错污染）。
 
-## 宿主闲聊 Bot（文本第一版）
+## 宿主闲聊 Bot（0x01 文本脑 + WeJam 接口）
 
-`wejam/` 是微信驱动；`bot/` 是跑在宿主上的闲聊脑（人设、印象、回复策略、PyQt 控制台）。**不改** `agent/` 与 proto。容器仍用 `bash docker/run.sh`。
+两层分开：
+
+| 层 | 代码 | 职责 |
+|---|---|---|
+| 眼睛 / 手 | 容器 `agent/` + 宿主 `wejam.Client` / `bot.hands.WeJamHands` | 读预览、发文本、登录。ChatBot 不碰 protobuf |
+| 脑 | 宿主 `bot/`（人设、印象、策略、记忆、PyQt） | 对齐 0x01 的文本闲聊；不接 QQ 网关 |
+
+**不改** `agent/` 与 proto。容器仍用 `bash docker/run.sh`，宿主只连 `127.0.0.1:7700`。
 
 ```
-微信容器 :7700  →  wejam.Client  →  bot.runner  →  LLM
+微信容器 :7700  →  WeJamHands  →  连发合并  →  ChatBot  →  LLM
                                       ↑
                                bot.admin 控制台
 ```
@@ -379,12 +388,23 @@ cp .env.example .env   # 填 LLM_API_KEY
 ./scripts/start-admin.sh
 ```
 
-控制台页：运行（启停 runner）、登录（二维码 / 一键登录）、Bot（会话白名单与群发言模式）、API（`.env`）、人设、回复策略、印象。
+控制台页：运行（启停 runner、状态灯、日志）、登录（二维码 / 一键登录）、Bot 设置（回复模式与白名单）、API（`.env`）、人设、回复策略、印象。
+
+桌面包装（对齐 0x01 的「QQ机器人管理.app」，依赖本仓库 `.venv`，不是独立免安装二进制）：
+
+```bash
+pip install -e ".[bot]"
+./scripts/package-admin.sh
+```
+
+- **macOS**：`dist/macos/WeJam闲聊控制台.app`（也可 `./scripts/install-desktop-app.sh` 装到桌面）
+- **Linux**：`dist/linux/wejam-admin-desktop.tar.gz`；在 Linux 上 `./scripts/install-desktop-linux.sh` 写入应用菜单和桌面 `.desktop`
+
 
 能力边界：
 
-- 全局 `watch_messages()` 只有会话预览，可能被截断；一轮多条时可能只看到最后一条。
-- 只能 `SendText`。模型若输出 `[[sticker:id]]` 会被剥掉。
+- 全局 `watch_messages()` 只有会话预览，可能被截断；一轮多条时预览往往只剩最后一条。同一会话短连发会先合并再问模型。
+- 只能 `SendText`。模型若输出 `[[sticker:id]]` 会被剥掉。看图、发图、语音、QQ 斜杠指令本版不做。
 - 白名单为空则不回复（默认仅「文件传输助手」）。微信没有官方 @：点名看 `reply_policy.toml` 的 `bot_names`。
 - `.env`、`data/` 不入库。
 
@@ -396,7 +416,7 @@ cp .env.example .env   # 填 LLM_API_KEY
 proto/wejam/v1/wejam.proto   gRPC 契约（唯一的接口真相）
 agent/                       服务端，容器内运行：无障碍、几何映射、状态机、消息解析
 wejam/                       宿主侧客户端库 + CLI（wejam/v1/ 是**入库**的生成 stub）
-bot/                         宿主闲聊脑 + PyQt 控制台（人设 / 印象 / 策略）
+bot/                         宿主闲聊脑 + WeJamHands + PyQt 控制台
 docker/                      Dockerfile 与入口脚本
 docs/                        VitePress 文档站
 examples/                    可运行示例（含 examples/personas/default）

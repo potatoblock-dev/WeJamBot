@@ -6,12 +6,12 @@ import asyncio
 import logging
 import time
 
-from wejam import Client
-
 from bot.allowlist import load_allow_chats
-from bot.channel import should_handle, turns_from_event
+from bot.channel import IncomingTurn, should_handle, turns_from_event
 from bot.chat import ChatBot
+from bot.coalesce import TurnCoalescer
 from bot.config import load_settings
+from bot.hands import WeJamHands
 from bot.impression.store import ImpressionStore
 from bot.impression.writer import ImpressionWriter
 from bot.llm.client import LLMClient
@@ -41,6 +41,11 @@ def build_bot() -> ChatBot:
     return ChatBot(llm, memory, gate, impressions, writer)
 
 
+def _handle_sync(bot: ChatBot, turn: IncomingTurn) -> None:
+    """Run one ChatBot turn on a fresh loop so the watch thread can keep receiving."""
+    asyncio.run(bot.handle(turn))
+
+
 def run_loop(bot: ChatBot | None = None, *, once: bool = False) -> None:
     """Connect to wejam, watch globally, handle allowed chats; reconnect on errors."""
     if bot is None:
@@ -51,26 +56,34 @@ def run_loop(bot: ChatBot | None = None, *, once: bool = False) -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     _log.info("chat runner target=%s", settings.wejam_target)
+    coalescer = TurnCoalescer(
+        lambda turn: _handle_sync(bot, turn),
+        burst_window=settings.coalesce_burst_seconds,
+        debounce=settings.coalesce_debounce_seconds,
+    )
     while True:
         try:
             allowed = load_allow_chats(settings.allow_chats_path)
             _log.info("allow chats=%s", sorted(allowed) or "(empty — will not reply)")
-            with Client(settings.wejam_target) as client:
-                bot.bind_sender(TextSender(client))
-                for event in client.watch_messages():
+            with WeJamHands(settings.wejam_target) as hands:
+                bot.bind_sender(TextSender(hands))
+                for event in hands.watch_messages():
                     allowed = load_allow_chats(settings.allow_chats_path)
                     for turn in turns_from_event(event):
                         if not should_handle(turn, allowed):
                             continue
-                        asyncio.run(bot.handle(turn))
+                        coalescer.submit(turn)
                     if once:
+                        coalescer.flush_pending()
                         return
         except KeyboardInterrupt:
             _log.info("runner stopped")
+            coalescer.flush_pending()
             return
         except Exception:
             _log.exception("wejam connection interrupted; retry in 2s")
             if once:
+                coalescer.flush_pending()
                 raise
             time.sleep(2)
 

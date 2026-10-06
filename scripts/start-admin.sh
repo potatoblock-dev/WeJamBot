@@ -1,11 +1,5 @@
 #!/usr/bin/env bash
-# Open the PyQt WeJam chat admin window.
+# 打开原生桌面管理窗口（PyQt6）。
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PY="$ROOT/.venv/bin/python"
-if [[ ! -x "$PY" ]]; then
-  echo "缺少 .venv，先执行: python3 -m venv .venv && .venv/bin/pip install -e '.[bot]'"
-  exit 1
-fi
-cd "$ROOT"
-exec "$PY" -m bot.admin.desktop
+exec "$ROOT/scripts/admin-launcher.sh"

@@ -1,9 +1,11 @@
-"""Channel mapping and whitelist handle rules (no live WeChat)."""
+"""Channel mapping, WeJamHands, and text coalescing (no live WeChat)."""
 
 from types import SimpleNamespace
 
 from bot.channel import IncomingTurn, should_handle, turns_from_event
-from bot.reply import split_bubbles, strip_sticker_markers
+from bot.coalesce import TurnCoalescer, merge_turns
+from bot.hands import WeJamHands
+from bot.reply import TextSender, split_bubbles, strip_sticker_markers
 
 
 def test_turns_from_event_skips_self_and_non_text() -> None:
@@ -71,3 +73,49 @@ def test_strip_sticker_and_split_bubbles() -> None:
     raw = "先这样 [[sticker:facepalm]]\n\n---\n\n再说一句"
     assert "sticker" not in strip_sticker_markers(raw)
     assert split_bubbles(raw) == ["先这样", "再说一句"]
+
+
+def test_merge_turns_joins_unique_lines() -> None:
+    """Consecutive duplicate previews collapse; distinct lines stay in order."""
+    a = IncomingTurn(chat="文件传输助手", sender="", text="一", preview_only=True, unread=1)
+    b = IncomingTurn(chat="文件传输助手", sender="", text="一", preview_only=True, unread=1)
+    c = IncomingTurn(chat="文件传输助手", sender="", text="二", preview_only=True, unread=2)
+    merged = merge_turns([a, b, c])
+    assert merged.text == "一\n二"
+    assert merged.unread == 2
+    assert merged.preview_only is True
+
+
+def test_coalescer_flush_pending_merges_session() -> None:
+    """submit then flush_pending delivers one merged turn per session."""
+    got: list[IncomingTurn] = []
+    coalescer = TurnCoalescer(got.append, burst_window=30.0, debounce=30.0)
+    coalescer.submit(IncomingTurn(chat="文件传输助手", sender="", text="甲"))
+    coalescer.submit(IncomingTurn(chat="文件传输助手", sender="", text="乙"))
+    coalescer.flush_pending()
+    assert len(got) == 1
+    assert got[0].text == "甲\n乙"
+
+
+def test_hands_send_text_uses_client() -> None:
+    """WeJamHands.send_text delegates to the driver client."""
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.sent: list[tuple[str, str]] = []
+
+        def close(self) -> None:
+            return None
+
+        def send_text(self, chat: str, text: str) -> SimpleNamespace:
+            self.sent.append((chat, text))
+            return SimpleNamespace(ok=True, detail="")
+
+    fake = FakeClient()
+    hands = WeJamHands(client=fake)
+    result = hands.send_text("文件传输助手", "hi")
+    assert result.ok is True
+    assert fake.sent == [("文件传输助手", "hi")]
+    sender = TextSender(hands)
+    assert sender.send("文件传输助手", "again") is True
+    assert fake.sent[-1] == ("文件传输助手", "again")

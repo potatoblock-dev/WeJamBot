@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -37,6 +40,15 @@ class BotSnapshot:
     llm_configured: bool
     wejam_target: str
     project: str
+    healthy: bool
+
+
+@dataclass(frozen=True)
+class AdminUiState:
+    """Persisted desktop admin UI preferences."""
+
+    policy_anti_injection_expanded: bool = True
+    policy_stay_on_prompt_expanded: bool = True
 
 
 def _persona_catalog() -> PersonaCatalog:
@@ -55,13 +67,15 @@ def bot_snapshot() -> BotSnapshot:
     """Return bot process and config summary for the dashboard."""
     settings = load_settings()
     status = bot_control.bot_status()
+    running = bool(status.get("running"))
     return BotSnapshot(
-        running=bool(status.get("running")),
+        running=running,
         pid=status.get("pid") if isinstance(status.get("pid"), int) else None,
         llm_model=settings.llm_model,
         llm_configured=bool(settings.llm_api_key),
         wejam_target=settings.wejam_target,
         project=str(bot_control.project_root()),
+        healthy=running,
     )
 
 
@@ -250,3 +264,101 @@ def clear_monitor_logs() -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("", encoding="utf-8")
     return path
+
+
+def log_file_size() -> int:
+    """Return bot.log size in bytes, or 0 if missing."""
+    path = bot_control.bot_log_path()
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def personas_dir() -> Path:
+    """Return the local persona packs folder."""
+    path = load_settings().personas_dir
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def reveal_in_file_manager(path: Path) -> Path:
+    """Open a folder in Finder (macOS) or the file manager (Linux)."""
+    path.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "darwin":
+        subprocess.run(["open", str(path)], check=True)
+    else:
+        subprocess.run(["xdg-open", str(path)], check=False)
+    return path
+
+
+def _admin_ui_path() -> Path:
+    """JSON file for fold-state and other desktop prefs."""
+    return load_settings().data_dir / "admin_ui.json"
+
+
+def read_admin_ui() -> AdminUiState:
+    """Load persisted desktop UI preferences."""
+    path = _admin_ui_path()
+    if not path.is_file():
+        return AdminUiState()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return AdminUiState()
+    if not isinstance(raw, dict):
+        return AdminUiState()
+    return AdminUiState(
+        policy_anti_injection_expanded=bool(raw.get("policy_anti_injection_expanded", True)),
+        policy_stay_on_prompt_expanded=bool(raw.get("policy_stay_on_prompt_expanded", True)),
+    )
+
+
+def save_admin_ui(state: AdminUiState) -> Path:
+    """Write desktop UI preferences for the next launch."""
+    path = _admin_ui_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "policy_anti_injection_expanded": state.policy_anti_injection_expanded,
+        "policy_stay_on_prompt_expanded": state.policy_stay_on_prompt_expanded,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def import_impression_files(paths: list[Path]) -> tuple[int, int, list[str]]:
+    """Import impression JSON files; return (imported, skipped, error lines)."""
+    imported = 0
+    skipped = 0
+    errors: list[str] = []
+    for path in paths:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            errors.append(f"{path.name}: 无法读取 JSON（{exc}）")
+            continue
+        rows: list[dict[str, object]] = []
+        if isinstance(raw, list):
+            rows = [item for item in raw if isinstance(item, dict)]
+        elif isinstance(raw, dict):
+            if raw.get("user_key") or raw.get("user_openid"):
+                rows = [raw]
+            nested = raw.get("impressions")
+            if isinstance(nested, list):
+                rows.extend(item for item in nested if isinstance(item, dict))
+        if not rows:
+            errors.append(f"{path.name}: 没有可导入的记录（需含 user_key）")
+            continue
+        for index, row in enumerate(rows, start=1):
+            key = str(row.get("user_key") or row.get("user_openid") or "").strip()
+            if not key:
+                skipped += 1
+                errors.append(f"{path.name}#{index}: 缺少 user_key，已跳过")
+                continue
+            save_impression(
+                key,
+                str(row.get("username") or ""),
+                str(row.get("impression") or ""),
+            )
+            imported += 1
+    return imported, skipped, errors

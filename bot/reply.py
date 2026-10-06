@@ -1,4 +1,4 @@
-"""Send model output as WeChat text bubbles via wejam.Client."""
+"""Send model output as WeChat text bubbles via WeJamHands."""
 
 from __future__ import annotations
 
@@ -27,14 +27,14 @@ def split_bubbles(text: str) -> list[str]:
 
 
 class TextSender:
-    """Wrap wejam.Client.send_text for one open connection."""
+    """Wrap WeJamHands.send_text for one open connection."""
 
-    def __init__(self, client: object) -> None:
-        self._client = client
+    def __init__(self, hands: object) -> None:
+        self._hands = hands
 
     def send(self, chat: str, text: str) -> bool:
         """Send one bubble; return False when the driver reports failure."""
-        result = self._client.send_text(chat, text)
+        result = self._hands.send_text(chat, text)
         ok = bool(getattr(result, "ok", False))
         if not ok:
             detail = str(getattr(result, "detail", "") or "")
