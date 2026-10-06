@@ -173,7 +173,10 @@ def open(chat):
         return False, "点了但没出现新窗口"
     if chat not in list_open():
         return False, "新窗口出现了，但 frame 名字不是目标会话"
-    return True, "已开独立窗口"
+
+    # 立刻平铺，避免与主窗口重叠（重叠会导致点击打错窗口、资料卡串内容）
+    arrange()
+    return True, "已开独立窗口（已平铺）"
 
 
 @synchronized
@@ -208,3 +211,49 @@ def read_messages(chat, limit=0):
     if limit:
         parsed = parsed[-limit:]
     return parsed
+
+
+@synchronized
+def arrange(main_ratio=0.52):
+    """把主窗口与所有独立聊天窗口**横向平铺**，互不重叠。
+
+    为什么必须平铺（实测结论）：窗口一重叠就出两类问题 ——
+      * 点击被投递给**最顶层窗口**：点「独立窗口里的头像」可能落到盖在上面的
+        主窗口的会话列表上（会莫名打开别的会话）；
+      * 资料卡的矩形会覆盖别的窗口，按矩形取文本时会读到**被压住的列表正文**
+        （实测把消息正文「动画表情」和别的会话名当成了昵称）。
+
+    虚拟桌面的尺寸和窗口位置都是我们自己定的，没理由让它们叠在一起。
+    """
+    from Xlib import X, display
+
+    wins = geometry.x11_windows()
+    if len(wins) <= 1:
+        return []
+    wechat = [w for w in wins if (w.get("cls") or "") == "wechat"] or wins
+    main = max(wechat, key=lambda w: w["w"] * w["h"])
+    chats = [w for w in wins if w["id"] != main["id"]]
+
+    d = display.Display()
+    sw = d.screen().width_in_pixels
+    sh = d.screen().height_in_pixels
+
+    n = len(chats)
+    main_w = int(sw * main_ratio) if n else sw
+    each = (sw - main_w) // n if n else 0
+
+    def place(wid, x, y, w, h):
+        obj = d.create_resource_object("window", wid)
+        obj.configure(x=int(x), y=int(y), width=int(w), height=int(h),
+                      stack_mode=X.Above)
+        d.sync()
+
+    place(main["id"], 0, 0, main_w, sh)
+    time.sleep(0.35)
+    out = [(main["id"], 0, 0, main_w, sh)]
+    for i, w in enumerate(chats):
+        x = main_w + i * each
+        place(w["id"], x, 0, each, sh)
+        time.sleep(0.35)
+        out.append((w["id"], x, 0, each, sh))
+    return out

@@ -86,6 +86,10 @@ class Client:
     def list_windows(self):
         return self._stub.ListWindows(wejam_pb2.ListWindowsRequest(), timeout=self.timeout)
 
+    def arrange_windows(self):
+        return self._stub.ArrangeWindows(wejam_pb2.ArrangeWindowsRequest(),
+                                         timeout=self.timeout)
+
     def open_window(self, chat):
         return self._stub.OpenWindow(wejam_pb2.OpenWindowRequest(chat=chat), timeout=self.timeout)
 

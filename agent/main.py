@@ -256,6 +256,10 @@ class WeJamServicer(wejam_pb2_grpc.WeJamServicer):
     def ListWindows(self, request, context):
         return wejam_pb2.ListWindowsResponse(chats=windows.list_open())
 
+    def ArrangeWindows(self, request, context):
+        windows.arrange()
+        return wejam_pb2.ListWindowsResponse(chats=windows.list_open())
+
     def OpenWindow(self, request, context):
         ok, detail = windows.open(request.chat)
         return wejam_pb2.WindowResult(ok=ok, detail=detail)

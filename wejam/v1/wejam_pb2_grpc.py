@@ -112,6 +112,11 @@ class WeJamStub:
                 request_serializer=wejam_dot_v1_dot_wejam__pb2.CloseWindowRequest.SerializeToString,
                 response_deserializer=wejam_dot_v1_dot_wejam__pb2.WindowResult.FromString,
                 _registered_method=True)
+        self.ArrangeWindows = channel.unary_unary(
+                '/wejam.v1.WeJam/ArrangeWindows',
+                request_serializer=wejam_dot_v1_dot_wejam__pb2.ArrangeWindowsRequest.SerializeToString,
+                response_deserializer=wejam_dot_v1_dot_wejam__pb2.ListWindowsResponse.FromString,
+                _registered_method=True)
         self.DumpA11yTree = channel.unary_unary(
                 '/wejam.v1.WeJam/DumpA11yTree',
                 request_serializer=wejam_dot_v1_dot_wejam__pb2.DumpA11yTreeRequest.SerializeToString,
@@ -241,6 +246,15 @@ class WeJamServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ArrangeWindows(self, request, context):
+        """把主窗口与所有独立窗口**横向平铺**，互不重叠。
+        为什么必须平铺：窗口重叠时点击会被投递给最顶层窗口，
+        资料卡的矩形也会盖住别的窗口导致读到别人的内容。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def DumpA11yTree(self, request, context):
         """---- 逃生舱：给需要深度定制的客户端，默认可由服务开关关闭 ----
         """
@@ -331,6 +345,11 @@ def add_WeJamServicer_to_server(servicer, server):
                     servicer.CloseWindow,
                     request_deserializer=wejam_dot_v1_dot_wejam__pb2.CloseWindowRequest.FromString,
                     response_serializer=wejam_dot_v1_dot_wejam__pb2.WindowResult.SerializeToString,
+            ),
+            'ArrangeWindows': grpc.unary_unary_rpc_method_handler(
+                    servicer.ArrangeWindows,
+                    request_deserializer=wejam_dot_v1_dot_wejam__pb2.ArrangeWindowsRequest.FromString,
+                    response_serializer=wejam_dot_v1_dot_wejam__pb2.ListWindowsResponse.SerializeToString,
             ),
             'DumpA11yTree': grpc.unary_unary_rpc_method_handler(
                     servicer.DumpA11yTree,
@@ -751,6 +770,33 @@ class WeJam:
             '/wejam.v1.WeJam/CloseWindow',
             wejam_dot_v1_dot_wejam__pb2.CloseWindowRequest.SerializeToString,
             wejam_dot_v1_dot_wejam__pb2.WindowResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ArrangeWindows(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/wejam.v1.WeJam/ArrangeWindows',
+            wejam_dot_v1_dot_wejam__pb2.ArrangeWindowsRequest.SerializeToString,
+            wejam_dot_v1_dot_wejam__pb2.ListWindowsResponse.FromString,
             options,
             channel_credentials,
             insecure,

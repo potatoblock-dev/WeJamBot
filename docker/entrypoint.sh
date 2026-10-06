@@ -50,8 +50,15 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$WEJAM_DATA/run}"
 echo "[entrypoint] HOME=$HOME DISPLAY=$DISPLAY uid=$(id -u)"
 
 # ---------- Xvfb ----------
-echo "[entrypoint] 启动 Xvfb 1280x900x24 ..."
-Xvfb "$DISPLAY" -screen 0 1280x900x24 -ac -noreset -nolisten tcp &
+# 虚拟桌面尺寸是我们自己定的，不是物理显示器。
+# 屏幕越大，能**互不重叠地平铺**的独立窗口越多：
+#   1280x900  -> 2 个（主窗口 + 1 个聊天窗口）
+#   2560x1440 -> 3~4 个
+# 为什么非要平铺：窗口一重叠，点击会被投递给最顶层窗口，
+# 资料卡的矩形也会盖住别的窗口导致读到别人的内容（实测踩过）。
+SCREEN="${WEJAM_SCREEN:-1280x900}"
+echo "[entrypoint] 启动 Xvfb ${SCREEN}x24 ..."
+Xvfb "$DISPLAY" -screen 0 "${SCREEN}x24" -ac -noreset -nolisten tcp &
 XVFB_PID=$!
 
 for _ in $(seq 1 60); do

@@ -53,6 +53,10 @@ service WeJam {
   rpc ListWindows(ListWindowsRequest) returns (ListWindowsResponse);
   rpc OpenWindow(OpenWindowRequest) returns (WindowResult);
   rpc CloseWindow(CloseWindowRequest) returns (WindowResult);
+  // 把主窗口与所有独立窗口**横向平铺**，互不重叠。
+  // 为什么必须平铺：窗口重叠时点击会被投递给最顶层窗口，
+  // 资料卡的矩形也会盖住别的窗口导致读到别人的内容。
+  rpc ArrangeWindows(ArrangeWindowsRequest) returns (ListWindowsResponse);
 
   // ---- 逃生舱：给需要深度定制的客户端，默认可由服务开关关闭 ----
   rpc DumpA11yTree(DumpA11yTreeRequest) returns (DumpA11yTreeResponse);
@@ -221,6 +225,8 @@ message InvokeMessageResult {
 }
 
 message ListWindowsRequest {}
+
+message ArrangeWindowsRequest {}
 
 message ListWindowsResponse {
   repeated string chats = 1;   // 已开独立窗口的会话名（frame 名字即会话名）

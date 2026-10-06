@@ -182,6 +182,10 @@ class WeChat:
     def close_window(self, chat) -> bool:
         return bool(self._c.close_window(chat).ok)
 
+    def arrange(self) -> list:
+        """把主窗口与独立窗口横向平铺，互不重叠。"""
+        return list(self._c.arrange_windows().chats)
+
     def windows(self) -> list:
         """已开独立窗口的会话名。"""
         return list(self._c.list_windows().chats)
