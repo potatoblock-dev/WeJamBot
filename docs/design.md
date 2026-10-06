@@ -205,9 +205,32 @@ GUI 探测默认关闭，仅在显式设置 `WEJAM_VERSION_VIA_GUI=1` 时启用�
 屏幕尺寸也是可配的（`WEJAM_SCREEN`，见 `docker/entrypoint.sh`）：
 能平铺几个窗口，取决于屏幕有多宽。
 
-:::tip 顺带排除掉的一条路
-XInput 在这个 Xvfb 上只有 **2.0**，而创建额外 master 设备（多指针）需要 2.1+。
-所以「多个指针各驱动一个窗口」的真并发走不通 —— 键盘焦点仍然是全局唯一的。
+### 多指针（MPX）：机制在，注入路径缺
+
+先纠正我说错的一句：**MPX 是 XInput 2.0 就有的**（master/slave 层级就是为它设计的），
+不需要 2.1。实测在这个容器里创建第二个 master 设备**成功**：
+
+```
+$ xinput create-master wejam-second
+⎡ wejam-second pointer    id=8   [master pointer  (9)]
+⎣ wejam-second keyboard   id=9   [master keyboard (8)]
+```
+
+**每个 master 键盘有自己独立的焦点** —— 这正是「真并发写」缺的那一环。
+
+但要走通还差两步，而且都不在 python-xlib 0.33 里：
+
+| 需要 | 现状 |
+|---|---|
+| `XISetFocus` —— 给指定 master 设焦点 | `xinput` 没有这个子命令；python-xlib 未暴露 |
+| `XTestFakeDeviceKeyEvent` —— 往指定设备注入 | XTEST 的 `FakeInput` 永远打到**第一个** master；python-xlib 只包了它 |
+
+得手写两个原始协议请求。在此之前，「多窗口并发发送」仍然不可用。
+
+:::warning 还有一个未验证的风险
+`XSendEvent` 的实验表明**应用按自己内部的焦点状态路由按键**（事件投递地址被忽略）。
+所以即使 X11 层面按设备分了焦点，微信/Chromium 是否跟着分，目前**没有证据**。
+先把这点验证掉，再决定要不要投入实现那两段原始协议。
 :::
 
 ## 一个隐蔽的定位 bug
