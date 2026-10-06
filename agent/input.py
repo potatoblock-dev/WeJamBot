@@ -163,3 +163,17 @@ def clear_input():
     time.sleep(0.25)
     tap_key("BackSpace")
     time.sleep(0.3)
+
+
+def raise_window(wid):
+    """把某个窗口抬到最前。
+
+    为什么需要：独立聊天窗口会盖住主窗口的会话列表区域，
+    点会话列表时点击会被投递给盖在上面的独立窗口 —— 实测导致右键菜单
+    根本弹不出来。所以点主窗口的控件之前要先把它抬起来。
+    """
+    d = display.Display()
+    w = d.create_resource_object("window", wid)
+    w.configure(stack_mode=X.Above)
+    d.sync()
+    time.sleep(0.25)

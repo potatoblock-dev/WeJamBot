@@ -134,8 +134,17 @@ def open(chat):
     px, py = int(e.x * sx + ox), int(e.y * sy + oy)
     pw, ph = int(e.width * sx), int(e.height * sy)
 
-    before = {w["id"] for w in geometry.x11_windows()}
+    wins_before = geometry.x11_windows()
+    before = {w["id"] for w in wins_before}
     from . import input as inputmod
+
+    # 先抬起主窗口：独立聊天窗口会盖住会话列表区域，
+    # 不抬起来的话右键会被投递给盖在上面的独立窗口，菜单根本弹不出来。
+    cands = [w for w in wins_before if (w.get("cls") or "") == "wechat"] or wins_before
+    if cands:
+        main = max(cands, key=lambda w: w["w"] * w["h"])
+        inputmod.raise_window(main["id"])
+
     inputmod.click_at(px + pw // 2, py + ph // 2, button=3)
     time.sleep(1.4)
 

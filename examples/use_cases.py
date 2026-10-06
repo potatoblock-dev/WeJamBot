@@ -9,9 +9,9 @@
     实测切换要 **3~7 秒**（重新渲染 + 等稳定），而会话已经在眼前时只要 **0.7~1 秒**。
     把常用会话常驻独立窗口，之后每次操作都省下这几秒。
 
-⚠️ **实测限制：同时只能开 1 个独立窗口**（开新的会替换旧的）。
-   所以是「主窗口 1 个 + 独立窗口 1 个 = 2 个会话免切换」，
-   不是「想常驻几个就常驻几个」。适合「机器人主要服务一个群」的场景。
+✅ 独立窗口**能同时开多个**（实测 3 个并存）。
+   常驻几个常用会话，之后对它们的读/发都不再有切换开销。
+   代价：每开一个要一次性约 6 秒，之后长期受益。
 
 ⚠️ 写操作**必须串行**：X11 只有一个键盘焦点。
    实测用 XSendEvent 想绕过焦点直接投递给目标窗口也不行
@@ -70,29 +70,34 @@ def case1_resident(wx, live):
 
 # ---------------------------------------------------------------------------
 def case2_two_chats(wx, live):
-    """用例 2：主窗口 + 1 个常驻窗口 = 两个会话都免切换。
+    """用例 2：多个常驻窗口，读它们全部免切换。
 
-    微信只允许 1 个独立窗口，所以这是上限。做法：把机器人主服务的会话
-    常驻独立窗口，主窗口留给你自己用 —— 两边互不打扰。
+    适合：机器人固定服务多个群/多个通知源。
+    开窗口有一次性成本（约 6 秒/个），所以只常驻**真正高频**的那几个。
     """
-    hr("用例 2 · 两个会话都免切换（独立窗口上限 1 个）")
+    hr("用例 2 · 多会话常驻，全部免切换")
 
-    others = [c.name for c in wx.chats() if c.name != WATCH]
-    second = others[0] if others else None
+    resident = [WATCH] + [c.name for c in wx.chats()
+                          if c.name != WATCH][:2]
 
-    if WATCH not in wx.windows():
-        wx.open_window(WATCH)
-    print(f"  常驻窗口: {wx.windows()}   （主窗口留给其他会话）")
+    for n in resident:
+        if n not in wx.windows():
+            t0 = time.time(); wx.open_window(n)
+            print(f"  常驻 {n[:18]:20} （一次性 {(time.time()-t0)*1000:.0f}ms）")
+    print(f"  常驻窗口: {wx.windows()}")
 
-    for name in [WATCH, second]:
-        if not name:
-            continue
+    print("  —— 读它们全部无切换开销 ——")
+    for name in wx.windows():
         ms, dt = timed(lambda n=name: wx.messages(chat=n, limit=5))
-        tag = "独立窗口" if name in wx.windows() else "主窗口"
-        print(f"  {name[:18]:20} [{tag}] {dt:6.0f}ms  {len(ms)} 条")
+        print(f"  {name[:18]:20} {dt:6.0f}ms  {len(ms)} 条")
 
-    print("  说明：两次读之间**没有切换开销** —— 独立窗口一直渲染着 WATCH，")
-    print("        主窗口切到 second 也是一次切换但之后稳定。")
+    print("  —— 对照：无常驻窗口的会话 ——")
+    for c in wx.chats():
+        if c.name in wx.windows():
+            continue
+        ms, dt = timed(lambda n=c.name: wx.messages(chat=n, limit=5))
+        print(f"  {c.name[:18]:20} {dt:6.0f}ms  {len(ms)} 条   ← 每次都要切换")
+        break
 
 
 # ---------------------------------------------------------------------------

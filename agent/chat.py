@@ -377,6 +377,12 @@ def _foreign_windows():
     主窗口按 **WM_CLASS == 'wechat' 里最大的那个** 来认，不能只按面积取最大：
     搜一搜窗口（class 为空）可能比主窗口还大，那样主窗口会被当成外来弹层，
     结果任何操作都拒绝执行 —— 实测踩到过。
+
+    ⚠️ 必须**排除「独立聊天窗口」**：它们是合法的常驻窗口，不是挡路弹层。
+    早期版本没排除，导致 _popup_guard 每次操作前都把已经打开的独立窗口
+    Escape 掉 —— 表现出来就是「同时只能开一个独立窗口」，
+    而实际上是自己的守卫在关它。独立窗口的 a11y frame 名字是会话名
+    （主窗口叫「微信」），据此区分。
     """
     try:
         wins = geometry.x11_windows()
@@ -384,11 +390,21 @@ def _foreign_windows():
         return []
     if len(wins) <= 1:
         return []
+
+    legit = set()
+    try:
+        for f, w, _score in geometry.pair_frames_with_windows():
+            if f["name"] and f["name"] != "微信":
+                legit.add(w["id"])
+    except Exception:
+        pass
+
     wechat = [w for w in wins if (w.get("cls") or "") == "wechat"]
     pool = wechat or wins
     main = max(pool, key=lambda w: w["w"] * w["h"])
     return [w for w in wins
-            if w["id"] != main["id"] and w["w"] * w["h"] >= POPUP_MIN_AREA]
+            if w["id"] != main["id"] and w["id"] not in legit
+            and w["w"] * w["h"] >= POPUP_MIN_AREA]
 
 
 def _popup_guard():
