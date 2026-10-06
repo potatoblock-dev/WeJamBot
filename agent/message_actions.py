@@ -237,6 +237,18 @@ def sender_of(chat, index):
     """
     from . import chat as chatmod
 
+    # 已知限制：该会话开了独立窗口时，资料卡会与别的窗口重叠，
+    # 「取卡片里最靠上的文本」会读到被压在下面的列表文本（实测会返回消息正文
+    # 或别的会话名）。**宁可明确拒绝，也不返回错名字** —— 调用方可能拿它去 @人。
+    try:
+        from . import windows as winmod
+        if chat in winmod.list_open():
+            return (False, "", [],
+                    "该会话开了独立窗口，发送者查询暂不支持（资料卡与窗口重叠，"
+                    "已知限制）。可以先关掉独立窗口再查。")
+    except Exception:
+        pass
+
     blocked = chatmod._popup_guard()
     if blocked:
         return False, "", [], blocked
