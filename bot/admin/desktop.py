@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (
 
 from bot.admin import bot_control, env_settings, log_view, status_light, store, theme, wejam_status
 from bot.admin.collapsible import CollapsibleSection
+from bot.admin.docker_control import DockerSnapshot
 from bot.config import load_settings
 
 
@@ -61,6 +62,29 @@ class _BotPowerWorker(QObject):
             self.finished.emit(exc)
 
 
+class _DockerPowerWorker(QObject):
+    """Start/stop wejam-session or open Docker Desktop off the UI thread."""
+
+    finished = pyqtSignal(object)
+
+    def __init__(self, action: str) -> None:
+        super().__init__()
+        self._action = action
+
+    def run(self) -> None:
+        """Execute container start/stop or open Docker Desktop."""
+        try:
+            if self._action == "start":
+                store.start_wejam_container()
+            elif self._action == "stop":
+                store.stop_wejam_container()
+            else:
+                store.open_docker_app()
+            self.finished.emit(None)
+        except Exception as exc:  # noqa: BLE001 — surface any failure to the UI
+            self.finished.emit(exc)
+
+
 class AdminWindow(QMainWindow):
     """Main window: run, WeChat login, Bot 设置, API, persona, policy, impressions."""
 
@@ -79,6 +103,9 @@ class AdminWindow(QMainWindow):
         self._records: list[dict] = []
         self._log_clear_armed = False
         self._power_thread: QThread | None = None
+        self._docker_thread: QThread | None = None
+        self._docker_poll_tick = 0
+        self._last_docker_snap = store.docker_snapshot()
         self._log_watermark = store.log_file_size()
         self._build_ui()
         self._wire_actions()
@@ -113,7 +140,10 @@ class AdminWindow(QMainWindow):
 
     def _on_poll(self) -> None:
         """Periodically refresh run-tab status and message logs."""
-        self.refresh_status()
+        self._docker_poll_tick += 1
+        # Docker CLI inspect is heavier than gRPC probe; refresh every 3s.
+        force_docker = self._docker_poll_tick % 3 == 0
+        self.refresh_status(refresh_docker=force_docker)
         self.refresh_logs()
 
     def _build_ui(self) -> None:
@@ -159,9 +189,25 @@ class AdminWindow(QMainWindow):
         self._wejam_hint.setProperty("role", "warning")
         layout.addWidget(self._wejam_hint)
 
+        docker_box = QGroupBox("微信容器（Docker）")
+        docker_col = QVBoxLayout(docker_box)
+        self._docker_label = QLabel("检查中…")
+        self._docker_label.setWordWrap(True)
+        self._docker_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        docker_col.addWidget(self._docker_label)
+        docker_row = QHBoxLayout()
+        self._btn_docker_toggle = QPushButton("启动容器")
+        self._btn_docker_open = QPushButton("打开 Docker Desktop")
+        docker_row.addWidget(self._btn_docker_toggle)
+        docker_row.addWidget(self._btn_docker_open)
+        docker_row.addStretch()
+        docker_col.addLayout(docker_row)
+        layout.addWidget(docker_box)
+
         hint = QLabel(
             "人设与 reply_policy 保存后下一条消息即生效。"
-            "改代码后先点停止再启动。微信容器仍用 bash docker/run.sh。"
+            "改代码后先点停止再启动。"
+            "微信容器用上方开关启停（等价 bash docker/run.sh）。"
         )
         hint.setWordWrap(True)
         hint.setProperty("role", "muted")
@@ -438,7 +484,9 @@ class AdminWindow(QMainWindow):
     def _wire_actions(self) -> None:
         """Connect buttons and list selection."""
         self._btn_toggle.clicked.connect(self.on_toggle_power)
-        self._btn_refresh.clicked.connect(self.refresh_status)
+        self._btn_refresh.clicked.connect(lambda: self.refresh_status(refresh_docker=True))
+        self._btn_docker_toggle.clicked.connect(self.on_toggle_docker)
+        self._btn_docker_open.clicked.connect(lambda: self._docker_power("open"))
         self._btn_log.clicked.connect(self.refresh_logs)
         self._btn_clear_log.clicked.connect(self.on_clear_logs)
         self._btn_qr.clicked.connect(self._refresh_qr)
@@ -483,8 +531,8 @@ class AdminWindow(QMainWindow):
         self._allow_edit.setPlainText("\n".join(store.read_allow_chats()))
         self._sync_speak_buttons()
 
-    def refresh_status(self) -> None:
-        """Update run label, WeJam probe, title light, and toggle caption."""
+    def refresh_status(self, *, refresh_docker: bool = True) -> None:
+        """Update run label, Docker panel, WeJam probe, title light, and toggles."""
         snap = store.bot_snapshot()
         lines = store.tail_log_lines()
         light = status_light.title_light(
@@ -496,6 +544,21 @@ class AdminWindow(QMainWindow):
         llm = "已配置" if snap.llm_configured else "未配置 LLM_API_KEY"
         self._status_label.setText(f"{state}{pid} · 模型 {snap.llm_model} · {llm}")
         self._btn_toggle.setText("停止" if snap.running else "启动")
+        if refresh_docker:
+            self._last_docker_snap = store.docker_snapshot()
+        docker = self._last_docker_snap
+        self._docker_label.setText(self._format_docker_summary(docker))
+        self._docker_label.setProperty(
+            "role", "accent" if docker.container_running else "warning"
+        )
+        self._docker_label.style().unpolish(self._docker_label)
+        self._docker_label.style().polish(self._docker_label)
+        busy = self._docker_thread is not None
+        self._btn_docker_toggle.setText(
+            "停止容器" if docker.container_running else "启动容器"
+        )
+        self._btn_docker_toggle.setEnabled(not busy and docker.daemon_ok)
+        self._btn_docker_open.setEnabled(not busy)
         view = wejam_status.probe(snap.wejam_target)
         if view.reachable:
             self._wejam_hint.setText(
@@ -504,11 +567,91 @@ class AdminWindow(QMainWindow):
             self._wejam_hint.setProperty("role", "accent")
         else:
             self._wejam_hint.setText(
-                f"WeJam {snap.wejam_target} 未连通。先 bash docker/run.sh。 {view.error}"
+                self._wejam_unreachable_hint(snap.wejam_target, docker, view.error)
             )
             self._wejam_hint.setProperty("role", "warning")
         self._wejam_hint.style().unpolish(self._wejam_hint)
         self._wejam_hint.style().polish(self._wejam_hint)
+
+    def _format_docker_summary(self, docker: DockerSnapshot) -> str:
+        """One-line Docker summary; leads with container on/off for the run tab."""
+        if not docker.daemon_ok:
+            power = "容器：未知（引擎未就绪）"
+        elif docker.container_running:
+            power = f"容器：已开启（{docker.container}）"
+        elif docker.container_status in {"", "absent", "unknown"}:
+            power = "容器：已关闭"
+        else:
+            power = f"容器：已关闭（{docker.container_status}）"
+        engine = "引擎 ✓" if docker.daemon_ok else "引擎 ✗"
+        if docker.image_present:
+            img = f"镜像 {docker.image}"
+            if docker.image_id:
+                img += f" ({docker.image_id})"
+        else:
+            img = f"镜像缺失 {docker.image}"
+        parts = [power, engine, img]
+        if docker.detail and not docker.daemon_ok:
+            parts.append(docker.daemon_error or docker.detail)
+        return " · ".join(parts)
+
+    def _wejam_unreachable_hint(
+        self, target: str, docker: DockerSnapshot, error: str
+    ) -> str:
+        """Explain gRPC failure using Docker layer status instead of raw shell only."""
+        if not docker.daemon_ok:
+            tip = "Docker 引擎未就绪：先打开 Docker Desktop，或点下方「打开 Docker Desktop」。"
+        elif not docker.image_present:
+            tip = f"本地没有镜像 {docker.image}，需先按文档构建后再点「启动容器」。"
+        elif not docker.container_running:
+            tip = "容器未开启：点下方「启动容器」（等价 bash docker/run.sh）。"
+        else:
+            tip = "容器已开启但 gRPC 未就绪，稍等或点刷新；仍失败再点「停止容器」后重新启动。"
+        err = f" {error}" if error else ""
+        return f"WeJam {target} 未连通。{tip}{err}"
+
+    def on_toggle_docker(self) -> None:
+        """Start or stop the WeChat container from the single toggle button."""
+        docker = self._last_docker_snap
+        self._docker_power("stop" if docker.container_running else "start")
+
+    def _docker_power(self, action: str) -> None:
+        """Dispatch container start/stop or open Docker Desktop without freezing UI."""
+        if self._docker_thread is not None:
+            return
+        self._btn_docker_toggle.setEnabled(False)
+        self._btn_docker_open.setEnabled(False)
+        thread = QThread(self)
+        worker = _DockerPowerWorker(action)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(
+            lambda err, act=action: self._docker_power_done(err, act, thread, worker)
+        )
+        self._docker_thread = thread
+        thread.start()
+
+    def _docker_power_done(
+        self,
+        err: object,
+        action: str,
+        thread: QThread,
+        worker: _DockerPowerWorker,
+    ) -> None:
+        """Re-enable Docker buttons after a container/Desktop action finishes."""
+        thread.quit()
+        thread.wait(2000)
+        worker.deleteLater()
+        thread.deleteLater()
+        self._docker_thread = None
+        if err is not None:
+            title = {
+                "start": "启动容器失败",
+                "stop": "停止容器失败",
+                "open": "打开 Docker Desktop 失败",
+            }.get(action, "Docker 操作失败")
+            QMessageBox.warning(self, title, str(err))
+        self.refresh_status(refresh_docker=True)
 
     def refresh_logs(self) -> None:
         """Reload filtered runner logs into the monitor view."""

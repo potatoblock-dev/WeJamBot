@@ -17,10 +17,26 @@ IMAGE="${WEJAM_IMAGE:-wejam/wechat:latest}"
 VOLUME="${WEJAM_VOLUME:-wejam-data}"
 PORT="${WEJAM_PORT:-7700}"
 
-docker rm -f "$NAME" >/dev/null 2>&1 || true
-docker volume create "$VOLUME" >/dev/null
+# GUI / 非登录 shell 常没有 ~/.local/bin；允许 DOCKER_BIN 或本机常见路径。
+if [[ -z "${DOCKER_BIN:-}" ]]; then
+    if command -v docker >/dev/null 2>&1; then
+        DOCKER_BIN="$(command -v docker)"
+    elif [[ -x "${HOME}/.local/bin/docker" ]]; then
+        DOCKER_BIN="${HOME}/.local/bin/docker"
+    elif [[ -x /usr/local/bin/docker ]]; then
+        DOCKER_BIN=/usr/local/bin/docker
+    elif [[ -x /Applications/Docker.app/Contents/Resources/bin/docker ]]; then
+        DOCKER_BIN=/Applications/Docker.app/Contents/Resources/bin/docker
+    else
+        echo "docker: command not found（请安装 Docker Desktop 或把 docker 放进 PATH）" >&2
+        exit 127
+    fi
+fi
 
-docker run -d --name "$NAME" \
+"$DOCKER_BIN" rm -f "$NAME" >/dev/null 2>&1 || true
+"$DOCKER_BIN" volume create "$VOLUME" >/dev/null
+
+"$DOCKER_BIN" run -d --name "$NAME" \
     -p "127.0.0.1:${PORT}:7700" \
     -v "${VOLUME}:/data" \
     --restart unless-stopped \

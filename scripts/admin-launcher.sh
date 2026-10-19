@@ -32,6 +32,8 @@ fi
 
 cd "$ROOT"
 export PYTHONPATH="$ROOT"
+# .app 启动时 PATH 很短；补上本地 docker CLI，供控制台一键启停容器。
+export PATH="${HOME}/.local/bin:/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:${PATH}"
 log "starting admin desktop"
 
 if [[ "$(uname -s)" == "Darwin" && "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" == "1" ]]; then

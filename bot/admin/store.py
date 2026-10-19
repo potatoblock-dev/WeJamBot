@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from bot.admin import bot_control, env_settings
+from bot.admin import bot_control, docker_control, env_settings
+from bot.admin.docker_control import DockerSnapshot
 from bot.allowlist import load_allow_chats, save_allow_chats
 from bot.config import load_settings
 from bot.impression.store import ImpressionStore
@@ -89,6 +90,28 @@ def stop_bot() -> BotSnapshot:
     """Stop the chat runner via stop-bot.sh."""
     bot_control.stop_bot()
     return bot_snapshot()
+
+
+def docker_snapshot() -> DockerSnapshot:
+    """Return Docker engine / image / wejam-session status for the run tab."""
+    return docker_control.docker_snapshot()
+
+
+def start_wejam_container() -> DockerSnapshot:
+    """Start the WeChat session container via docker/run.sh."""
+    docker_control.start_session()
+    return docker_control.docker_snapshot()
+
+
+def stop_wejam_container() -> DockerSnapshot:
+    """Stop the WeChat session container."""
+    docker_control.stop_session()
+    return docker_control.docker_snapshot()
+
+
+def open_docker_app() -> None:
+    """Open Docker Desktop so the engine can come up."""
+    docker_control.open_docker_desktop()
 
 
 def list_persona_packs() -> list[dict[str, object]]:

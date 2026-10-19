@@ -371,7 +371,7 @@ python tests/check_concurrency.py
 | 眼睛 / 手 | 容器 `agent/` + 宿主 `wejam.Client` / `bot.hands.WeJamHands` | 读预览、发文本、登录。ChatBot 不碰 protobuf |
 | 脑 | 宿主 `bot/`（人设、印象、策略、记忆、PyQt） | 对齐 0x01 的文本闲聊；不接 QQ 网关 |
 
-**不改** `agent/` 与 proto。容器仍用 `bash docker/run.sh`，宿主只连 `127.0.0.1:7700`。
+**不改** `agent/` 与 proto。容器可用控制台「运行」页一键启停，或 `bash docker/run.sh`；宿主只连 `127.0.0.1:7700`。
 
 ```
 微信容器 :7700  →  WeJamHands  →  连发合并  →  ChatBot  →  LLM
@@ -388,7 +388,7 @@ cp .env.example .env   # 填 LLM_API_KEY
 ./scripts/start-admin.sh
 ```
 
-控制台页：运行（启停 runner、状态灯、日志）、登录（二维码 / 一键登录）、Bot 设置（回复模式与白名单）、API（`.env`）、人设、回复策略、印象。
+控制台页：运行（启停 runner、微信容器 Docker 运维、状态灯、日志）、登录（二维码 / 一键登录）、Bot 设置（回复模式与白名单）、API（`.env`）、人设、回复策略、印象。
 
 桌面包装（对齐 0x01 的「QQ机器人管理.app」，依赖本仓库 `.venv`，不是独立免安装二进制）：
 
