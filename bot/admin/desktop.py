@@ -8,12 +8,21 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import QEvent, QObject, Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QCloseEvent, QGuiApplication, QIcon, QKeySequence, QMouseEvent
+from PyQt6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QGuiApplication,
+    QIcon,
+    QKeySequence,
+    QMouseEvent,
+    QPixmap,
+)
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -35,7 +44,16 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from bot.admin import bot_control, env_settings, log_view, status_light, store, theme, wejam_status
+from bot.admin import (
+    bot_control,
+    env_settings,
+    log_view,
+    status_light,
+    store,
+    theme,
+    wechat_view,
+    wejam_status,
+)
 from bot.admin.collapsible import CollapsibleSection
 from bot.admin.docker_control import DockerSnapshot
 from bot.config import load_settings
@@ -85,6 +103,133 @@ class _DockerPowerWorker(QObject):
             self.finished.emit(exc)
 
 
+class _FrameGrabWorker(QObject):
+    """Fetch one Xvfb PNG off the UI thread."""
+
+    finished = pyqtSignal(object, str)
+
+    def run(self) -> None:
+        """Capture the container root window, or return an error string."""
+        try:
+            png, err = wechat_view.capture_png()
+        except Exception as exc:  # noqa: BLE001 — keep the dialog alive
+            self.finished.emit(None, str(exc))
+            return
+        self.finished.emit(png, err)
+
+
+class _WeChatViewDialog(QDialog):
+    """Non-modal window that shows the WeChat screen and accepts no input."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("微信画面（只读）")
+        self.setModal(False)
+        self.resize(960, 680)
+        self._png = b""
+        self._thread: QThread | None = None
+        self._busy = False
+        self._label = QLabel("正在抓取…")
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self._label)
+        self.installEventFilter(self)
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._grab)
+        self._timer.start()
+        self._grab()
+
+    def eventFilter(self, watched: object, event: QEvent) -> bool:
+        """Drop key and mouse events so this window cannot drive WeChat."""
+        if event.type() in (
+            QEvent.Type.KeyPress,
+            QEvent.Type.KeyRelease,
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseButtonRelease,
+            QEvent.Type.MouseButtonDblClick,
+        ):
+            return True
+        return super().eventFilter(watched, event)
+
+    def _grab(self) -> None:
+        """Start one capture if the previous grab has finished."""
+        if self._busy:
+            return
+        self._busy = True
+        thread = QThread(self)
+        worker = _FrameGrabWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda png, err: self._grab_done(png, err, thread, worker))
+        self._thread = thread
+        thread.start()
+
+    def _grab_done(
+        self,
+        png: object,
+        err: str,
+        thread: QThread,
+        worker: _FrameGrabWorker,
+    ) -> None:
+        """Show the new frame or a short status line."""
+        thread.quit()
+        thread.wait(2000)
+        worker.deleteLater()
+        thread.deleteLater()
+        self._thread = None
+        self._busy = False
+        if not isinstance(png, (bytes, bytearray)) or not png:
+            self._png = b""
+            self._label.setPixmap(QPixmap())
+            self._label.setText(err or "容器未开启")
+            return
+        self._png = bytes(png)
+        self._label.setText("")
+        self._paint()
+
+    def _paint(self) -> None:
+        """Scale the last PNG into the label without changing aspect ratio."""
+        if not self._png:
+            return
+        pix = QPixmap()
+        if not pix.loadFromData(self._png):
+            self._label.setText("画面数据无法显示")
+            return
+        target = self._label.size()
+        if target.width() < 2 or target.height() < 2:
+            return
+        self._label.setPixmap(
+            pix.scaled(
+                target,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+    def resizeEvent(self, event: object) -> None:
+        """Refit the current frame when the dialog is resized."""
+        super().resizeEvent(event)  # type: ignore[arg-type]
+        self._paint()
+
+    def showEvent(self, event: object) -> None:
+        """Resume grabbing each time the window is shown again."""
+        super().showEvent(event)  # type: ignore[arg-type]
+        if not self._timer.isActive():
+            self._timer.start()
+            self._grab()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Stop grabbing when the window closes."""
+        self._timer.stop()
+        thread = self._thread
+        if thread is not None:
+            thread.quit()
+            thread.wait(2000)
+        super().closeEvent(event)
+
+
 class AdminWindow(QMainWindow):
     """Main window: run, WeChat login, Bot 设置, API, persona, policy, impressions."""
 
@@ -104,6 +249,7 @@ class AdminWindow(QMainWindow):
         self._log_clear_armed = False
         self._power_thread: QThread | None = None
         self._docker_thread: QThread | None = None
+        self._view_dialog: _WeChatViewDialog | None = None
         self._docker_poll_tick = 0
         self._last_docker_snap = store.docker_snapshot()
         self._log_watermark = store.log_file_size()
@@ -198,8 +344,10 @@ class AdminWindow(QMainWindow):
         docker_row = QHBoxLayout()
         self._btn_docker_toggle = QPushButton("启动容器")
         self._btn_docker_open = QPushButton("打开 Docker Desktop")
+        self._btn_wechat_view = QPushButton("打开画面")
         docker_row.addWidget(self._btn_docker_toggle)
         docker_row.addWidget(self._btn_docker_open)
+        docker_row.addWidget(self._btn_wechat_view)
         docker_row.addStretch()
         docker_col.addLayout(docker_row)
         layout.addWidget(docker_box)
@@ -208,6 +356,7 @@ class AdminWindow(QMainWindow):
             "人设与 reply_policy 保存后下一条消息即生效。"
             "改代码后先点停止再启动。"
             "微信容器用上方开关启停（等价 bash docker/run.sh）。"
+            "「打开画面」只观看容器里的微信，不能点击或输入。"
         )
         hint.setWordWrap(True)
         hint.setProperty("role", "muted")
@@ -487,6 +636,7 @@ class AdminWindow(QMainWindow):
         self._btn_refresh.clicked.connect(lambda: self.refresh_status(refresh_docker=True))
         self._btn_docker_toggle.clicked.connect(self.on_toggle_docker)
         self._btn_docker_open.clicked.connect(lambda: self._docker_power("open"))
+        self._btn_wechat_view.clicked.connect(self._open_wechat_view)
         self._btn_log.clicked.connect(self.refresh_logs)
         self._btn_clear_log.clicked.connect(self.on_clear_logs)
         self._btn_qr.clicked.connect(self._refresh_qr)
@@ -614,6 +764,16 @@ class AdminWindow(QMainWindow):
         """Start or stop the WeChat container from the single toggle button."""
         docker = self._last_docker_snap
         self._docker_power("stop" if docker.container_running else "start")
+
+    def _open_wechat_view(self) -> None:
+        """Show the view-only WeChat frame window."""
+        dialog = self._view_dialog
+        if dialog is None:
+            dialog = _WeChatViewDialog(self)
+            self._view_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _docker_power(self, action: str) -> None:
         """Dispatch container start/stop or open Docker Desktop without freezing UI."""
