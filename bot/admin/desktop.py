@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QSplitter,
     QTabWidget,
     QTextEdit,
@@ -56,7 +57,9 @@ from bot.admin import (
 )
 from bot.admin.collapsible import CollapsibleSection
 from bot.admin.docker_control import DockerSnapshot
+from bot.allowlist import merge_chat_names_for_picker
 from bot.config import load_settings
+from bot.eyes import HandsError
 
 
 class _BotPowerWorker(QObject):
@@ -123,7 +126,7 @@ class _WeChatViewDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("微信画面（只读）")
+        self.setWindowTitle("微信画面（只读·仅遗留 GUI 桥）")
         self.setModal(False)
         self.resize(960, 680)
         self._png = b""
@@ -241,16 +244,26 @@ class AdminWindow(QMainWindow):
         self._persona_loading = False
         self._policy_dirty = False
         self._policy_loading = False
+        self._allow_dirty = False
+        self._allow_loading = False
+        self._allow_live_names: list[str] = []
         self._imp_dirty = False
         self._imp_loading = False
         self._imp_key = ""
         self._imp_editing_new = False
         self._records: list[dict] = []
+        self._culture_dirty = False
+        self._culture_loading = False
+        self._culture_chat = ""
+        self._culture_editing_new = False
+        self._culture_records: list[dict] = []
         self._log_clear_armed = False
         self._power_thread: QThread | None = None
         self._docker_thread: QThread | None = None
         self._view_dialog: _WeChatViewDialog | None = None
         self._docker_poll_tick = 0
+        self._login_poll_tick = 0
+        self._last_login_phase = ""
         self._last_docker_snap = store.docker_snapshot()
         self._log_watermark = store.log_file_size()
         self._build_ui()
@@ -308,6 +321,7 @@ class AdminWindow(QMainWindow):
         tabs.addTab(self._build_persona_tab(), "人设")
         tabs.addTab(self._build_policy_tab(), "回复策略")
         tabs.addTab(self._build_impressions_tab(), "印象")
+        tabs.addTab(self._build_group_culture_tab(), "群文化")
         self.setCentralWidget(tabs)
 
         save_act = QAction("保存", self)
@@ -380,15 +394,37 @@ class AdminWindow(QMainWindow):
         return root
 
     def _build_login_tab(self) -> QWidget:
-        """WeJam QR login and one-click submit."""
+        """WeJam QR login, account summary when logged in, and logout."""
         root = QWidget()
         layout = QVBoxLayout(root)
-        hint = QLabel("从 WeJam gRPC 拉取当前登录二维码。容器未启动时这里会失败。")
+        hint = QLabel(
+            "未登录时拉取二维码扫码；登录成功后显示账号摘要。"
+            "退出登录会操作容器里微信的设置面板。"
+        )
         hint.setWordWrap(True)
         hint.setProperty("role", "muted")
         layout.addWidget(hint)
         self._login_hint = QLabel("")
         layout.addWidget(self._login_hint)
+
+        self._account_box = QGroupBox("已登录账号")
+        account_l = QVBoxLayout(self._account_box)
+        self._account_label = QLabel("")
+        self._account_label.setWordWrap(True)
+        self._account_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        account_l.addWidget(self._account_label)
+        account_row = QHBoxLayout()
+        self._btn_refresh_account = QPushButton("刷新账号信息")
+        self._btn_logout = QPushButton("退出登录")
+        account_row.addWidget(self._btn_refresh_account)
+        account_row.addWidget(self._btn_logout)
+        account_row.addStretch()
+        account_l.addLayout(account_row)
+        self._account_box.setVisible(False)
+        layout.addWidget(self._account_box)
+
         self._qr_label = QLabel("尚未拉取二维码")
         self._qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._qr_label.setMinimumHeight(280)
@@ -433,22 +469,36 @@ class AdminWindow(QMainWindow):
 
         allow = QGroupBox("白名单会话")
         allow_l = QVBoxLayout(allow)
-        allow_hint = QLabel("一行一个微信会话名。空则不回复。默认仅文件传输助手。")
+        allow_hint = QLabel(
+            "勾选要回复的微信会话（显示名须与会话列表一致）。"
+            "空则不回复。点「刷新会话列表」从容器拉取；名单外但仍在白名单里的项也会显示。"
+        )
         allow_hint.setWordWrap(True)
         allow_hint.setProperty("role", "muted")
         allow_l.addWidget(allow_hint)
-        self._allow_edit = QPlainTextEdit()
-        self._allow_edit.setMinimumHeight(140)
-        allow_l.addWidget(self._allow_edit)
+        self._allow_list = QListWidget()
+        self._allow_list.setMinimumHeight(180)
+        allow_l.addWidget(self._allow_list)
+        self._allow_summary = QLabel("")
+        self._allow_summary.setWordWrap(True)
+        self._allow_summary.setProperty("role", "muted")
+        allow_l.addWidget(self._allow_summary)
+        allow_row = QHBoxLayout()
+        self._btn_refresh_allow = QPushButton("刷新会话列表")
         self._btn_save_allow = QPushButton("保存白名单")
-        allow_l.addWidget(self._btn_save_allow, alignment=Qt.AlignmentFlag.AlignLeft)
+        allow_row.addWidget(self._btn_refresh_allow)
+        allow_row.addWidget(self._btn_save_allow)
+        allow_row.addStretch()
+        allow_l.addLayout(allow_row)
         layout.addWidget(allow)
 
         files = QGroupBox("本地文件")
         file_row = QHBoxLayout(files)
         self._btn_personas_folder = QPushButton("打开人设")
+        self._btn_knowledge_folder = QPushButton("打开知识库")
         self._btn_project_folder = QPushButton("打开项目根")
         file_row.addWidget(self._btn_personas_folder)
+        file_row.addWidget(self._btn_knowledge_folder)
         file_row.addWidget(self._btn_project_folder)
         layout.addWidget(files)
         layout.addStretch(1)
@@ -477,6 +527,11 @@ class AdminWindow(QMainWindow):
         self._api_timeout = QLineEdit()
         self._api_key_hint = QLabel("")
         self._api_key_hint.setProperty("role", "muted")
+        self._api_target.setPlaceholderText("推荐 127.0.0.1:7702（Callus openclaw）")
+        self._api_target.setToolTip(
+            "wejam.v1 桥地址。推荐 Callus openclaw 非 GUI :7702；"
+            "遗留 GUI：WeJam :7700 / Callus capture :7701。微信画面仅 GUI 桥可用。"
+        )
         form.addRow("WEJAM_TARGET", self._api_target)
         form.addRow("BOT_NAME", self._api_bot_name)
         form.addRow("LLM_BASE_URL", self._api_llm_base)
@@ -553,6 +608,16 @@ class AdminWindow(QMainWindow):
         layout.addWidget(hint)
         switches = QGroupBox("回复开关与频率（reply_policy.toml）")
         switches_layout = QVBoxLayout(switches)
+        context_row = QHBoxLayout()
+        context_row.addWidget(QLabel("上下文条数（Callus 滚动读取）"))
+        self._context_limit = QSpinBox()
+        self._context_limit.setRange(0, 500)
+        self._context_limit.setValue(30)
+        self._context_limit.setToolTip("回复前滚动读取的消息条数；0 表示只读当前可见窗。下一条消息生效。")
+        self._context_limit.valueChanged.connect(self._on_context_limit_changed)
+        context_row.addWidget(self._context_limit)
+        context_row.addStretch(1)
+        switches_layout.addLayout(context_row)
         self._policy = QPlainTextEdit()
         self._policy.setMinimumHeight(220)
         switches_layout.addWidget(self._policy)
@@ -630,6 +695,53 @@ class AdminWindow(QMainWindow):
         outer.addWidget(split)
         return root
 
+    def _build_group_culture_tab(self) -> QWidget:
+        """Per-group culture / meme note list and editor."""
+        root = QWidget()
+        split = QSplitter(Qt.Orientation.Horizontal)
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        hint = QLabel(
+            "群消息成功回复后会自动更新本群备忘（可在 reply_policy.toml 关 group_culture_auto）。"
+            "此处可改写或清空；只记群梗与风向，不记个人隐私。"
+        )
+        hint.setWordWrap(True)
+        hint.setProperty("role", "muted")
+        left_layout.addWidget(hint)
+        self._culture_search = QLineEdit()
+        self._culture_search.setPlaceholderText("按备注名或会话名搜索…")
+        left_layout.addWidget(self._culture_search)
+        self._culture_list = QListWidget()
+        left_layout.addWidget(self._culture_list)
+        culture_actions = QHBoxLayout()
+        self._btn_new_culture = QPushButton("新建")
+        culture_actions.addWidget(self._btn_new_culture)
+        left_layout.addLayout(culture_actions)
+        split.addWidget(left)
+        right = QWidget()
+        form = QFormLayout(right)
+        self._culture_chat_edit = QLineEdit()
+        self._culture_chat_edit.setPlaceholderText("微信会话名（须与会话列表一致）")
+        self._culture_label_edit = QLineEdit()
+        self._culture_label_edit.setPlaceholderText("可选备注名，便于列表识别")
+        self._culture_body = QPlainTextEdit()
+        self._culture_body.setPlaceholderText("群氛围、梗、近期话题…")
+        form.addRow("会话名", self._culture_chat_edit)
+        form.addRow("备注名", self._culture_label_edit)
+        form.addRow("群文化", self._culture_body)
+        culture_btns = QHBoxLayout()
+        self._btn_save_culture = QPushButton("保存群文化")
+        self._btn_clear_culture = QPushButton("清空正文")
+        culture_btns.addWidget(self._btn_save_culture)
+        culture_btns.addWidget(self._btn_clear_culture)
+        form.addRow(culture_btns)
+        split.addWidget(right)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 2)
+        outer = QVBoxLayout(root)
+        outer.addWidget(split)
+        return root
+
     def _wire_actions(self) -> None:
         """Connect buttons and list selection."""
         self._btn_toggle.clicked.connect(self.on_toggle_power)
@@ -641,11 +753,18 @@ class AdminWindow(QMainWindow):
         self._btn_clear_log.clicked.connect(self.on_clear_logs)
         self._btn_qr.clicked.connect(self._refresh_qr)
         self._btn_submit_login.clicked.connect(self._submit_login)
+        self._btn_refresh_account.clicked.connect(self._refresh_account_info)
+        self._btn_logout.clicked.connect(self._logout_wechat)
         for mode, btn in self._speak_buttons.items():
             btn.clicked.connect(lambda checked, m=mode: self.on_select_speak_mode(m, checked))
         self._btn_save_allow.clicked.connect(self.on_save_allow)
+        self._btn_refresh_allow.clicked.connect(self.on_refresh_allow_chats)
+        self._allow_list.itemChanged.connect(self._mark_allow_dirty)
         self._btn_personas_folder.clicked.connect(
             lambda: store.reveal_in_file_manager(store.personas_dir())
+        )
+        self._btn_knowledge_folder.clicked.connect(
+            lambda: store.reveal_in_file_manager(store.knowledge_dir())
         )
         self._btn_project_folder.clicked.connect(
             lambda: store.reveal_in_file_manager(bot_control.project_root())
@@ -669,6 +788,14 @@ class AdminWindow(QMainWindow):
         self._btn_import_imp.clicked.connect(self.on_import_impressions)
         self._imp_search.textChanged.connect(self.render_impressions)
         self._imp_list.currentItemChanged.connect(self.on_impression_selected)
+        self._btn_save_culture.clicked.connect(self.on_save_group_culture)
+        self._btn_clear_culture.clicked.connect(self.on_clear_group_culture)
+        self._btn_new_culture.clicked.connect(self.on_new_group_culture)
+        self._culture_search.textChanged.connect(self.render_group_cultures)
+        self._culture_list.currentItemChanged.connect(self.on_group_culture_selected)
+        self._culture_chat_edit.textChanged.connect(self._mark_culture_dirty)
+        self._culture_label_edit.textChanged.connect(self._mark_culture_dirty)
+        self._culture_body.textChanged.connect(self._mark_culture_dirty)
 
     def refresh_all(self) -> None:
         """Reload every editor from disk."""
@@ -678,7 +805,9 @@ class AdminWindow(QMainWindow):
         self.load_personas()
         self.load_policy()
         self.load_impressions()
-        self._allow_edit.setPlainText("\n".join(store.read_allow_chats()))
+        self.load_group_cultures()
+        if not self._allow_dirty:
+            self._reload_allow_list(live=self._allow_live_names)
         self._sync_speak_buttons()
 
     def refresh_status(self, *, refresh_docker: bool = True) -> None:
@@ -722,6 +851,77 @@ class AdminWindow(QMainWindow):
             self._wejam_hint.setProperty("role", "warning")
         self._wejam_hint.style().unpolish(self._wejam_hint)
         self._wejam_hint.style().polish(self._wejam_hint)
+        self._sync_login_tab(view)
+
+    def _sync_login_tab(self, view: wejam_status.WejamView) -> None:
+        """Show account panel only when logged in; refresh summary on phase change."""
+        logged_in = bool(view.reachable and view.phase == "LOGGED_IN")
+        self._account_box.setVisible(logged_in)
+        self._btn_logout.setVisible(logged_in)
+        self._btn_refresh_account.setVisible(logged_in)
+        self._qr_label.setVisible(not logged_in)
+        self._btn_qr.setVisible(not logged_in)
+        self._btn_submit_login.setVisible(not logged_in)
+        phase_changed = view.phase != self._last_login_phase
+        self._last_login_phase = view.phase
+        self._login_poll_tick += 1
+        if not logged_in:
+            return
+        if phase_changed or self._login_poll_tick % 5 == 0:
+            self._refresh_account_info(quiet=True)
+
+    def _format_account_text(self, account: wejam_status.AccountView) -> str:
+        """Format account summary lines for the login tab."""
+        if account.error:
+            return f"读取失败：{account.error}"
+        uptime_s = max(0, account.uptime_ms // 1000)
+        hint = account.account_hint or "（界面未读到昵称）"
+        return "\n".join(
+            [
+                f"显示名：{hint}",
+                f"登录阶段：{account.phase}",
+                f"微信版本：{account.version or '-'}",
+                f"登录详情：{account.detail or '-'}",
+                f"会话数：{account.chat_count}",
+                f"未读会话 / 未读消息：{account.unread_chats} / {account.unread_messages}",
+                f"服务运行：{uptime_s}s",
+            ]
+        )
+
+    def _refresh_account_info(self, *, quiet: bool = False) -> None:
+        """Reload GetAccountSummary into the login tab."""
+        target = load_settings().wejam_target
+        account = wejam_status.account_summary(target)
+        self._account_label.setText(self._format_account_text(account))
+        if account.error and not quiet:
+            QMessageBox.warning(self, "账号信息", account.error)
+        elif account.logged_in:
+            self._login_hint.setText("已登录")
+            self._login_hint.setProperty("role", "accent")
+            self._login_hint.style().unpolish(self._login_hint)
+            self._login_hint.style().polish(self._login_hint)
+
+    def _logout_wechat(self) -> None:
+        """Confirm and call WeJam Logout; then refresh the login tab."""
+        answer = QMessageBox.question(
+            self,
+            "退出登录",
+            "将在容器里的微信中执行「退出登录」。确定继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._btn_logout.setEnabled(False)
+        try:
+            phase = wejam_status.logout(load_settings().wejam_target)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "退出登录", str(exc))
+            self._btn_logout.setEnabled(True)
+            return
+        self._btn_logout.setEnabled(True)
+        QMessageBox.information(self, "退出登录", f"当前阶段：{phase}")
+        self.refresh_status(refresh_docker=False)
 
     def _format_docker_summary(self, docker: DockerSnapshot) -> str:
         """One-line Docker summary; leads with container on/off for the run tab."""
@@ -823,7 +1023,9 @@ class AdminWindow(QMainWindow):
         self._power("stop" if snap.running else "start")
 
     def _power(self, action: str) -> None:
-        """Dispatch start/stop without freezing the UI."""
+        """Dispatch start/stop without freezing the UI; ignore re-entry while busy."""
+        if self._power_thread is not None:
+            return
         self._btn_toggle.setEnabled(False)
         thread = QThread(self)
         worker = _BotPowerWorker(action)
@@ -893,6 +1095,7 @@ class AdminWindow(QMainWindow):
             QMessageBox.warning(self, "登录", str(exc))
             return
         QMessageBox.information(self, "登录", f"当前阶段：{phase}")
+        self.refresh_status(refresh_docker=False)
 
     def _sync_speak_buttons(self) -> None:
         """Check the button that matches reply_policy.toml."""
@@ -908,10 +1111,84 @@ class AdminWindow(QMainWindow):
         store.set_speak_mode(mode)
         self.load_policy()
 
+    def on_refresh_allow_chats(self) -> None:
+        """Pull live session names from WeChat and rebuild the checkbox list."""
+        try:
+            live = store.list_wechat_conversations()
+        except HandsError as exc:
+            QMessageBox.warning(
+                self,
+                "刷新会话列表",
+                f"无法读取会话列表（容器未开或 WeJam 未连通）：\n{exc}",
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 — surface any transport failure
+            QMessageBox.warning(self, "刷新会话列表", str(exc))
+            return
+        self._allow_live_names = live
+        self._reload_allow_list(live=live)
+        self._allow_dirty = False
+        QMessageBox.information(
+            self,
+            "刷新会话列表",
+            f"已加载 {len(live)} 个会话。勾选后点「保存白名单」。",
+        )
+
     def on_save_allow(self) -> None:
-        """Persist the whitelist editor."""
-        store.write_allow_chats(self._allow_edit.toPlainText())
+        """Persist checked session names as the allow list."""
+        names = self._checked_allow_names()
+        store.write_allow_chat_names(names)
+        self._allow_dirty = False
+        self._reload_allow_list(live=self._allow_live_names)
         QMessageBox.information(self, "白名单", "已保存。runner 会在下一条消息重读。")
+
+    def _reload_allow_list(self, *, live: list[str] | None = None) -> None:
+        """Rebuild checkbox rows from live names plus names already allowed."""
+        allowed = set(store.read_allow_chats())
+        names = merge_chat_names_for_picker(live or [], allowed)
+        self._allow_loading = True
+        self._allow_list.clear()
+        for name in names:
+            item = QListWidgetItem(name)
+            item.setFlags(
+                item.flags()
+                | Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsEnabled
+            )
+            item.setCheckState(
+                Qt.CheckState.Checked if name in allowed else Qt.CheckState.Unchecked
+            )
+            self._allow_list.addItem(item)
+        self._allow_loading = False
+        self._update_allow_summary()
+
+    def _checked_allow_names(self) -> list[str]:
+        """Return display names currently checked in the allow list."""
+        names: list[str] = []
+        for index in range(self._allow_list.count()):
+            item = self._allow_list.item(index)
+            if item is None:
+                continue
+            if item.checkState() == Qt.CheckState.Checked:
+                text = item.text().strip()
+                if text:
+                    names.append(text)
+        return names
+
+    def _update_allow_summary(self) -> None:
+        """Show which names will be written on save."""
+        checked = self._checked_allow_names()
+        if not checked:
+            self._allow_summary.setText("当前勾选：无（保存后不回复任何会话）")
+            return
+        self._allow_summary.setText("当前勾选：" + "、".join(checked))
+
+    def _mark_allow_dirty(self, _item: QListWidgetItem | None = None) -> None:
+        """Mark the allow list dirty when the user toggles a checkbox."""
+        if self._allow_loading:
+            return
+        self._allow_dirty = True
+        self._update_allow_summary()
 
     def load_api_settings(self) -> None:
         """Fill API form from .env (secrets masked)."""
@@ -1038,6 +1315,9 @@ class AdminWindow(QMainWindow):
         self._policy.setPlainText(body)
         self._policy_anti.setPlainText(anti)
         self._policy_stay.setPlainText(stay)
+        self._context_limit.blockSignals(True)
+        self._context_limit.setValue(store.read_context_message_limit())
+        self._context_limit.blockSignals(False)
         self._policy_loading = False
         self._policy_dirty = False
         self._sync_speak_buttons()
@@ -1047,10 +1327,27 @@ class AdminWindow(QMainWindow):
         if not self._policy_loading:
             self._policy_dirty = True
 
+    def _on_context_limit_changed(self, value: int) -> None:
+        """Keep the toml body in sync when the spin box changes."""
+        if self._policy_loading:
+            return
+        body = self._policy.toPlainText()
+        from bot.reply_policy import upsert_context_message_limit_text
+
+        self._policy_loading = True
+        self._policy.setPlainText(upsert_context_message_limit_text(body, value))
+        self._policy_loading = False
+        self._mark_policy_dirty()
+
     def on_save_policy(self) -> None:
         """Write reply_policy.toml from the three editors."""
+        from bot.reply_policy import upsert_context_message_limit_text
+
+        body = upsert_context_message_limit_text(
+            self._policy.toPlainText(), self._context_limit.value()
+        )
         store.save_reply_policy_parts(
-            self._policy.toPlainText(),
+            body,
             self._policy_anti.toPlainText(),
             self._policy_stay.toPlainText(),
         )
@@ -1135,6 +1432,78 @@ class AdminWindow(QMainWindow):
             self, "导入印象", f"导入 {imported}，跳过 {skipped}。\n{extra}"
         )
 
+    def _mark_culture_dirty(self) -> None:
+        """Remember unsaved group-culture edits."""
+        if not self._culture_loading:
+            self._culture_dirty = True
+
+    def load_group_cultures(self) -> None:
+        """Refresh group-culture records from disk."""
+        self._culture_records = store.list_group_cultures()
+        self.render_group_cultures()
+
+    def render_group_cultures(self) -> None:
+        """Fill the group-culture list, applying the search box."""
+        needle = self._culture_search.text().strip().casefold()
+        self._culture_list.clear()
+        for row in self._culture_records:
+            chat = str(row.get("chat") or "")
+            label = store.group_culture_display_label(row)
+            hay = f"{label} {chat}".casefold()
+            if needle and needle not in hay:
+                continue
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, chat)
+            self._culture_list.addItem(item)
+
+    def on_group_culture_selected(self, current: QListWidgetItem | None) -> None:
+        """Load one group culture into the form."""
+        if current is None:
+            return
+        chat = str(current.data(Qt.ItemDataRole.UserRole) or "")
+        record = store.load_group_culture(chat)
+        self._culture_loading = True
+        self._culture_chat = chat
+        self._culture_editing_new = False
+        self._culture_chat_edit.setText(str(record.get("chat") or ""))
+        self._culture_chat_edit.setReadOnly(True)
+        self._culture_label_edit.setText(str(record.get("label") or ""))
+        self._culture_body.setPlainText(str(record.get("culture") or ""))
+        self._culture_loading = False
+        self._culture_dirty = False
+
+    def on_new_group_culture(self) -> None:
+        """Clear the form for a new WeChat chat title."""
+        self._culture_editing_new = True
+        self._culture_chat = ""
+        self._culture_chat_edit.setReadOnly(False)
+        self._culture_chat_edit.clear()
+        self._culture_label_edit.clear()
+        self._culture_body.clear()
+
+    def on_save_group_culture(self) -> None:
+        """Write the group-culture form to disk."""
+        chat = self._culture_chat_edit.text().strip() or self._culture_chat
+        if not chat:
+            QMessageBox.warning(self, "缺少会话名", "请填写微信会话名（与会话列表一致）")
+            return
+        store.save_group_culture(
+            chat, self._culture_label_edit.text(), self._culture_body.toPlainText()
+        )
+        self._culture_chat_edit.setReadOnly(True)
+        self._culture_dirty = False
+        self.load_group_cultures()
+
+    def on_clear_group_culture(self) -> None:
+        """Wipe culture body for the selected chat."""
+        chat = self._culture_chat_edit.text().strip() or self._culture_chat
+        if not chat:
+            return
+        store.clear_group_culture(chat)
+        self._culture_body.clear()
+        self._culture_dirty = False
+        self.load_group_cultures()
+
     def _save_visible(self) -> None:
         """⌘S / Ctrl+S saves the editor that currently has unsaved work."""
         if self._persona_dirty:
@@ -1143,18 +1512,34 @@ class AdminWindow(QMainWindow):
             self.on_save_policy()
         if self._imp_dirty:
             self.on_save_impression()
+        if self._culture_dirty:
+            self.on_save_group_culture()
+        if self._allow_dirty:
+            self.on_save_allow()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Stop polling and stop the runner when the window closes."""
+        """Prompt for unsaved whitelist, then stop UI polling (runner stays up)."""
+        if self._allow_dirty:
+            answer = QMessageBox.question(
+                self,
+                "未保存的白名单",
+                "白名单有未保存的勾选变更，是否保存？",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save,
+            )
+            if answer == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            if answer == QMessageBox.StandardButton.Save:
+                names = self._checked_allow_names()
+                store.write_allow_chat_names(names)
+                self._allow_dirty = False
         self._poll.stop()
         app = QApplication.instance()
         if app is not None:
             app.removeEventFilter(self)
-        try:
-            if store.bot_snapshot().running:
-                store.stop_bot()
-        except Exception as exc:  # noqa: BLE001
-            _admin_log(f"stop on close failed: {exc!r}")
         super().closeEvent(event)
 
 

@@ -2,9 +2,16 @@
 
 微信侧产品仓：**0x01 文本闲聊脑 + WeJam 眼睛/手**。上游驱动仍见 [Potatoblock-Dev/WeJamBot](https://github.com/Potatoblock-Dev/WeJamBot)；QQ 官方机器人脑仍是 [baitang-bt/0x01](https://github.com/baitang-bt/0x01)。本仓推送到 [Potatoblock-Dev/WeJambBot_0x02](https://github.com/Potatoblock-Dev/WeJambBot_0x02)。
 
-把微信 Linux 版跑进容器（Docker Desktop 虚拟桌面 + Xvfb），通过 **gRPC** 对外提供「读会话 / 读消息 / 发消息」。闲聊脑跑在宿主，**不进容器**。
+闲聊脑跑在宿主。消息桥经 **gRPC `wejam.v1`**，推荐接 **Callus-Bridge openclaw 非 GUI**（`:7702`，扫码 + ilink 长轮询，不点 Linux 微信）。  
+遗留路径：WeJam / Callus GUI 容器（`:7700` / `:7701`，Xvfb + AT-SPI）。
 
-**不使用 OCR，不使用输入法，不依赖静态坐标。**
+```bash
+# 推荐：另仓起桥后
+# cd ../Callus-Bridge && make openclaw
+WEJAM_TARGET=127.0.0.1:7702 python -m bot
+```
+
+**GUI 路径**：不使用 OCR，不使用输入法，不依赖静态坐标。
 
 ```
 ┌─ 容器 wejam-session ──────────────────────────┐
@@ -368,15 +375,15 @@ python tests/check_concurrency.py
 
 | 层 | 代码 | 职责 |
 |---|---|---|
-| 眼睛 / 手 | 容器 `agent/` + 宿主 `wejam.Client` / `bot.hands.WeJamHands` | 读预览、发文本、登录。ChatBot 不碰 protobuf |
-| 脑 | 宿主 `bot/`（人设、印象、策略、记忆、PyQt） | 对齐 0x01 的文本闲聊；不接 QQ 网关 |
+| 手眼 | `bot/eyes.py` 的 `WeChatEyes`；现实现是 `bot/hands.py` 的 `WeJamHands` | 列会话、订阅新消息、发文本、登录状态、拉二维码。返回普通数据。驱动事件停在 `WeJamHands` 里 |
+| 脑 | `bot/chat.py`、人设、印象、策略、连发合并、LLM | 只通过 `WeChatEyes` 读写微信，不 import protobuf，不依赖 wejam 事件类型 |
 
-**不改** `agent/` 与 proto。容器可用控制台「运行」页一键启停，或 `bash docker/run.sh`；宿主只连 `127.0.0.1:7700`。
+换一套手眼实现时，大脑代码保持不动。**不改** `agent/` 与 proto。容器可用控制台「运行」页一键启停，或 `bash docker/run.sh`；宿主只连 `127.0.0.1:7700`。
 
 ```
-微信容器 :7700  →  WeJamHands  →  连发合并  →  ChatBot  →  LLM
-                                      ↑
-                               bot.admin 控制台
+微信容器 :7700  →  WeJamHands（实现 WeChatEyes）  →  连发合并  →  ChatBot  →  LLM
+                                                      ↑
+                                               bot.admin 控制台
 ```
 
 ```bash
@@ -403,7 +410,7 @@ pip install -e ".[bot]"
 
 能力边界：
 
-- 全局 `watch_messages()` 只有会话预览，可能被截断；一轮多条时预览往往只剩最后一条。同一会话短连发会先合并再问模型。
+- 全局 `subscribe()` 只有会话预览，可能被截断；一轮多条时预览往往只剩最后一条。同一会话短连发会先合并再问模型。
 - 只能 `SendText`。模型若输出 `[[sticker:id]]` 会被剥掉。看图、发图、语音、QQ 斜杠指令本版不做。
 - 白名单为空则不回复（默认仅「文件传输助手」）。微信没有官方 @：点名看 `reply_policy.toml` 的 `bot_names`。
 - `.env`、`data/` 不入库。
@@ -416,7 +423,7 @@ pip install -e ".[bot]"
 proto/wejam/v1/wejam.proto   gRPC 契约（唯一的接口真相）
 agent/                       服务端，容器内运行：无障碍、几何映射、状态机、消息解析
 wejam/                       宿主侧客户端库 + CLI（wejam/v1/ 是**入库**的生成 stub）
-bot/                         宿主闲聊脑 + WeJamHands + PyQt 控制台
+bot/                         宿主闲聊脑；`eyes.py` 是手眼契约，`hands.py` 是 WeJam 实现，另有 PyQt 控制台
 docker/                      Dockerfile 与入口脚本
 docs/                        VitePress 文档站
 examples/                    可运行示例（含 examples/personas/default）
