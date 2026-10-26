@@ -223,7 +223,7 @@ def cmd_invoke(args):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="wejam", description="WeJamBot 客户端")
-    ap.add_argument("--target", default=None, help="gRPC 地址，默认 127.0.0.1:7700")
+    ap.add_argument("--target", default=None, help="gRPC 地址，默认 127.0.0.1:7701")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("status", help="服务与微信状态")

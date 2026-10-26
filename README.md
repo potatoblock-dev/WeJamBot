@@ -2,13 +2,13 @@
 
 微信侧产品仓：**0x01 文本闲聊脑 + WeJam 眼睛/手**。上游驱动仍见 [Potatoblock-Dev/WeJamBot](https://github.com/Potatoblock-Dev/WeJamBot)；QQ 官方机器人脑仍是 [baitang-bt/0x01](https://github.com/baitang-bt/0x01)。本仓推送到 [Potatoblock-Dev/WeJambBot_0x02](https://github.com/Potatoblock-Dev/WeJambBot_0x02)。
 
-闲聊脑跑在宿主。消息桥经 **gRPC `wejam.v1`**，推荐接 **Callus-Bridge openclaw 非 GUI**（`:7702`，扫码 + ilink 长轮询，不点 Linux 微信）。  
-遗留路径：WeJam / Callus GUI 容器（`:7700` / `:7701`，Xvfb + AT-SPI）。
+闲聊脑跑在宿主。消息桥经 **gRPC `wejam.v1`**，**主路径 = Callus-Bridge GUI**（`:7701`，真个人号，可进个人微信群）。
+可选旁路：openclaw 非 GUI（`:7702`，仅私聊，不能进个人群）；遗留 WeJam `:7700`。
 
 ```bash
 # 推荐：另仓起桥后
 # cd ../Callus-Bridge && make openclaw
-WEJAM_TARGET=127.0.0.1:7702 python -m bot
+WEJAM_TARGET=127.0.0.1:7701 python -m bot
 ```
 
 **GUI 路径**：不使用 OCR，不使用输入法，不依赖静态坐标。

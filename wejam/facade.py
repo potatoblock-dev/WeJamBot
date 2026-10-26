@@ -72,7 +72,7 @@ def _to_msg(m) -> Msg:
 
 
 class WeChat:
-    """微信实例门面。默认连本机 127.0.0.1:7700。"""
+    """微信实例门面。默认连本机 Callus GUI 127.0.0.1:7701。"""
 
     def __init__(self, target=None, timeout=60):
         self._c = Client(target, timeout=timeout)

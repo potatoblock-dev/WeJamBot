@@ -17,13 +17,12 @@
 - **未经同意处理他人数据**：抓取他人聊天内容用于分析、画像、转售
 - **任何违法用途**
 
-## 推荐接入（降低 GUI 风险）
+## 推荐接入
 
-优先经 **Callus-Bridge openclaw 非 GUI 桥**（`WEJAM_TARGET=127.0.0.1:7702`）：
-扫码 + 官方 ilink 长轮询收发，**不**在容器里点 Linux 微信界面。  
-详见 [Callus-Bridge docs/openclaw.md](https://github.com/baitang-bt/Callus-Bridge/blob/feat/openclaw-non-gui/docs/openclaw.md)（分支 `feat/openclaw-non-gui`）。
+- **个人微信群 / 需进群**：用 **Callus-Bridge GUI**（`WEJAM_TARGET=127.0.0.1:7701`，Xvfb + AT-SPI）。openclaw **不能**进个人群。
+- **仅私聊、想少点界面**：可选 **openclaw 非 GUI**（`:7702`，ilink 扫码长轮询）。见 [Callus-Bridge docs/openclaw.md](https://github.com/baitang-bt/Callus-Bridge/blob/main/docs/openclaw.md)。
 
-Linux 微信 + 无障碍 / 合成按键路径视为**遗留**，触发设备锁与风控的概率更高。
+无论哪条路径都是个人号自动化，存在平台风控；群聊场景接受 GUI 路径的相应风险。
 
 ## 风险自负
 

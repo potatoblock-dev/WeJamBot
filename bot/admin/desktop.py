@@ -527,10 +527,10 @@ class AdminWindow(QMainWindow):
         self._api_timeout = QLineEdit()
         self._api_key_hint = QLabel("")
         self._api_key_hint.setProperty("role", "muted")
-        self._api_target.setPlaceholderText("推荐 127.0.0.1:7702（Callus openclaw）")
+        self._api_target.setPlaceholderText("推荐 127.0.0.1:7701（Callus GUI）")
         self._api_target.setToolTip(
-            "wejam.v1 桥地址。推荐 Callus openclaw 非 GUI :7702；"
-            "遗留 GUI：WeJam :7700 / Callus capture :7701。微信画面仅 GUI 桥可用。"
+            "wejam.v1 桥地址。主路径 Callus GUI :7701（可进个人群）；"
+            "openclaw 私聊旁路 :7702；遗留 WeJam :7700。微信画面仅 GUI 桥可用。"
         )
         form.addRow("WEJAM_TARGET", self._api_target)
         form.addRow("BOT_NAME", self._api_bot_name)

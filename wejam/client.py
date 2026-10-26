@@ -5,7 +5,7 @@ import grpc
 
 from .v1 import wejam_pb2, wejam_pb2_grpc
 
-DEFAULT_TARGET = os.environ.get("WEJAM_TARGET", "127.0.0.1:7700")
+DEFAULT_TARGET = os.environ.get("WEJAM_TARGET", "127.0.0.1:7701")
 
 PHASE_NAME = {
     wejam_pb2.LOGIN_PHASE_UNSPECIFIED: "UNSPECIFIED",

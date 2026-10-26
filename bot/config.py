@@ -81,7 +81,7 @@ def load_settings() -> Settings:
         allow_chats_path=Path(
             _env("ALLOW_CHATS_PATH") or str(data_dir / "allow_chats.txt")
         ),
-        wejam_target=_env("WEJAM_TARGET", "127.0.0.1:7700"),
+        wejam_target=_env("WEJAM_TARGET", "127.0.0.1:7701"),
         bot_name=_env("BOT_NAME", "bot"),
         coalesce_burst_seconds=_env_float("COALESCE_BURST_SECONDS", 30.0),
         coalesce_debounce_seconds=_env_float("COALESCE_DEBOUNCE_SECONDS", 3.0),
