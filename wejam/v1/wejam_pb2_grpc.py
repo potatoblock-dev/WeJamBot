@@ -62,6 +62,16 @@ class WeJamStub:
                 request_serializer=wejam_dot_v1_dot_wejam__pb2.SubmitLoginRequest.SerializeToString,
                 response_deserializer=wejam_dot_v1_dot_wejam__pb2.LoginState.FromString,
                 _registered_method=True)
+        self.Logout = channel.unary_unary(
+                '/wejam.v1.WeJam/Logout',
+                request_serializer=wejam_dot_v1_dot_wejam__pb2.LogoutRequest.SerializeToString,
+                response_deserializer=wejam_dot_v1_dot_wejam__pb2.LoginState.FromString,
+                _registered_method=True)
+        self.GetAccountSummary = channel.unary_unary(
+                '/wejam.v1.WeJam/GetAccountSummary',
+                request_serializer=wejam_dot_v1_dot_wejam__pb2.GetAccountSummaryRequest.SerializeToString,
+                response_deserializer=wejam_dot_v1_dot_wejam__pb2.AccountSummary.FromString,
+                _registered_method=True)
         self.ListChats = channel.unary_unary(
                 '/wejam.v1.WeJam/ListChats',
                 request_serializer=wejam_dot_v1_dot_wejam__pb2.ListChatsRequest.SerializeToString,
@@ -86,6 +96,21 @@ class WeJamStub:
                 '/wejam.v1.WeJam/InvokeMessage',
                 request_serializer=wejam_dot_v1_dot_wejam__pb2.InvokeMessageRequest.SerializeToString,
                 response_deserializer=wejam_dot_v1_dot_wejam__pb2.InvokeMessageResult.FromString,
+                _registered_method=True)
+        self.ReadContext = channel.unary_unary(
+                '/wejam.v1.WeJam/ReadContext',
+                request_serializer=wejam_dot_v1_dot_wejam__pb2.ReadContextRequest.SerializeToString,
+                response_deserializer=wejam_dot_v1_dot_wejam__pb2.ReadContextResponse.FromString,
+                _registered_method=True)
+        self.ReadLatest = channel.unary_unary(
+                '/wejam.v1.WeJam/ReadLatest',
+                request_serializer=wejam_dot_v1_dot_wejam__pb2.ReadLatestRequest.SerializeToString,
+                response_deserializer=wejam_dot_v1_dot_wejam__pb2.ReadLatestResponse.FromString,
+                _registered_method=True)
+        self.CaptureMessageMedia = channel.unary_unary(
+                '/wejam.v1.WeJam/CaptureMessageMedia',
+                request_serializer=wejam_dot_v1_dot_wejam__pb2.CaptureMessageMediaRequest.SerializeToString,
+                response_deserializer=wejam_dot_v1_dot_wejam__pb2.CaptureMessageMediaResponse.FromString,
                 _registered_method=True)
         self.GetBadges = channel.unary_unary(
                 '/wejam.v1.WeJam/GetBadges',
@@ -143,6 +168,20 @@ class WeJamServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Logout(self, request, context):
+        """已登录时退出当前微信账号（服务内打开设置并确认「退出登录」）
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetAccountSummary(self, request, context):
+        """登录后的账号侧摘要（版本、未读汇总等；无稳定微信 openid）
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ListChats(self, request, context):
         """---- 会话与消息 ----
         """
@@ -175,6 +214,28 @@ class WeJamServicer:
     def InvokeMessage(self, request, context):
         """对某条消息执行右键菜单动作（复制 / 转发 / 收藏 / 引用 / 提醒 / 翻译 / 多选）。
         删除与撤回属于危险动作，服务端默认拒绝。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReadContext(self, request, context):
+        """---- Callus 增量：滚动上下文 / 最新一条 / 表情截取 ----
+        limit 由调用方传入；服务端不写死条数。打开会话会清未读。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReadLatest(self, request, context):
+        """只读当前会话最新一条（含发送者），不等滚动结束。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CaptureMessageMedia(self, request, context):
+        """对指定消息裁气泡图；动画则抽帧，画面不变则单帧并标记 sampled=false。
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -231,6 +292,16 @@ def add_WeJamServicer_to_server(servicer, server):
                     request_deserializer=wejam_dot_v1_dot_wejam__pb2.SubmitLoginRequest.FromString,
                     response_serializer=wejam_dot_v1_dot_wejam__pb2.LoginState.SerializeToString,
             ),
+            'Logout': grpc.unary_unary_rpc_method_handler(
+                    servicer.Logout,
+                    request_deserializer=wejam_dot_v1_dot_wejam__pb2.LogoutRequest.FromString,
+                    response_serializer=wejam_dot_v1_dot_wejam__pb2.LoginState.SerializeToString,
+            ),
+            'GetAccountSummary': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetAccountSummary,
+                    request_deserializer=wejam_dot_v1_dot_wejam__pb2.GetAccountSummaryRequest.FromString,
+                    response_serializer=wejam_dot_v1_dot_wejam__pb2.AccountSummary.SerializeToString,
+            ),
             'ListChats': grpc.unary_unary_rpc_method_handler(
                     servicer.ListChats,
                     request_deserializer=wejam_dot_v1_dot_wejam__pb2.ListChatsRequest.FromString,
@@ -255,6 +326,21 @@ def add_WeJamServicer_to_server(servicer, server):
                     servicer.InvokeMessage,
                     request_deserializer=wejam_dot_v1_dot_wejam__pb2.InvokeMessageRequest.FromString,
                     response_serializer=wejam_dot_v1_dot_wejam__pb2.InvokeMessageResult.SerializeToString,
+            ),
+            'ReadContext': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReadContext,
+                    request_deserializer=wejam_dot_v1_dot_wejam__pb2.ReadContextRequest.FromString,
+                    response_serializer=wejam_dot_v1_dot_wejam__pb2.ReadContextResponse.SerializeToString,
+            ),
+            'ReadLatest': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReadLatest,
+                    request_deserializer=wejam_dot_v1_dot_wejam__pb2.ReadLatestRequest.FromString,
+                    response_serializer=wejam_dot_v1_dot_wejam__pb2.ReadLatestResponse.SerializeToString,
+            ),
+            'CaptureMessageMedia': grpc.unary_unary_rpc_method_handler(
+                    servicer.CaptureMessageMedia,
+                    request_deserializer=wejam_dot_v1_dot_wejam__pb2.CaptureMessageMediaRequest.FromString,
+                    response_serializer=wejam_dot_v1_dot_wejam__pb2.CaptureMessageMediaResponse.SerializeToString,
             ),
             'GetBadges': grpc.unary_unary_rpc_method_handler(
                     servicer.GetBadges,
@@ -421,6 +507,60 @@ class WeJam:
             _registered_method=True)
 
     @staticmethod
+    def Logout(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/wejam.v1.WeJam/Logout',
+            wejam_dot_v1_dot_wejam__pb2.LogoutRequest.SerializeToString,
+            wejam_dot_v1_dot_wejam__pb2.LoginState.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetAccountSummary(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/wejam.v1.WeJam/GetAccountSummary',
+            wejam_dot_v1_dot_wejam__pb2.GetAccountSummaryRequest.SerializeToString,
+            wejam_dot_v1_dot_wejam__pb2.AccountSummary.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def ListChats(request,
             target,
             options=(),
@@ -545,6 +685,87 @@ class WeJam:
             '/wejam.v1.WeJam/InvokeMessage',
             wejam_dot_v1_dot_wejam__pb2.InvokeMessageRequest.SerializeToString,
             wejam_dot_v1_dot_wejam__pb2.InvokeMessageResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReadContext(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/wejam.v1.WeJam/ReadContext',
+            wejam_dot_v1_dot_wejam__pb2.ReadContextRequest.SerializeToString,
+            wejam_dot_v1_dot_wejam__pb2.ReadContextResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReadLatest(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/wejam.v1.WeJam/ReadLatest',
+            wejam_dot_v1_dot_wejam__pb2.ReadLatestRequest.SerializeToString,
+            wejam_dot_v1_dot_wejam__pb2.ReadLatestResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CaptureMessageMedia(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/wejam.v1.WeJam/CaptureMessageMedia',
+            wejam_dot_v1_dot_wejam__pb2.CaptureMessageMediaRequest.SerializeToString,
+            wejam_dot_v1_dot_wejam__pb2.CaptureMessageMediaResponse.FromString,
             options,
             channel_credentials,
             insecure,

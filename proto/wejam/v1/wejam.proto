@@ -1,10 +1,12 @@
-// WeJamBot 服务契约
+// Callus-Bridge 服务契约（与现用 WeJam bridge 线兼容）
 //
 // 设计原则：
 //   1. 契约描述「能力」与「状态」，不描述「手段」。
 //      a11y / XTEST / zbar / 截图 这类词不应出现在这里。
-//   2. 业务语义为主（登录、后续的消息读写），原子能力降级为逃生舱。
+//   2. 业务语义为主（登录、消息读写），原子能力降级为逃生舱。
 //   3. 状态由服务持有：客户端只 Get / Watch，不负责判断和决策。
+//   4. package / service / 既有 RPC 与字段号保持与 WeJam 一致，便于换桥；
+//      Callus 仅追加 RPC 与可选字段，旧客户端可忽略。
 syntax = "proto3";
 
 package wejam.v1;
@@ -22,6 +24,10 @@ service WeJam {
   rpc GetLoginQRCode(GetLoginQRCodeRequest) returns (LoginQRCode);
   // 「记住账号」场景下由客户端触发；服务内部决定怎么落地
   rpc SubmitLogin(SubmitLoginRequest) returns (LoginState);
+  // 已登录时退出当前微信账号（服务内打开设置并确认「退出登录」）
+  rpc Logout(LogoutRequest) returns (LoginState);
+  // 登录后的账号侧摘要（版本、未读汇总等；无稳定微信 openid）
+  rpc GetAccountSummary(GetAccountSummaryRequest) returns (AccountSummary);
 
   // ---- 会话与消息 ----
   rpc ListChats(ListChatsRequest) returns (ListChatsResponse);
@@ -35,6 +41,14 @@ service WeJam {
   // 对某条消息执行右键菜单动作（复制 / 转发 / 收藏 / 引用 / 提醒 / 翻译 / 多选）。
   // 删除与撤回属于危险动作，服务端默认拒绝。
   rpc InvokeMessage(InvokeMessageRequest) returns (InvokeMessageResult);
+
+  // ---- Callus 增量：滚动上下文 / 最新一条 / 表情截取 ----
+  // limit 由调用方传入；服务端不写死条数。打开会话会清未读。
+  rpc ReadContext(ReadContextRequest) returns (ReadContextResponse);
+  // 只读当前会话最新一条（含发送者），不等滚动结束。
+  rpc ReadLatest(ReadLatestRequest) returns (ReadLatestResponse);
+  // 对指定消息裁气泡图；动画则抽帧，画面不变则单帧并标记 sampled=false。
+  rpc CaptureMessageMedia(CaptureMessageMediaRequest) returns (CaptureMessageMediaResponse);
 
   // ---- 未读徽标 ----
   // 说明：导航图标上的「小红点/数字徽标」是**绘制装饰**，不在无障碍树里。
@@ -95,6 +109,24 @@ message LoginQRCode {
 
 message SubmitLoginRequest {}
 
+message LogoutRequest {}
+
+message GetAccountSummaryRequest {}
+
+message AccountSummary {
+  bool logged_in = 1;
+  string wechat_version = 2;
+  LoginPhase login_phase = 3;
+  string login_detail = 4;
+  int64 login_since_unix_ms = 5;
+  int64 uptime_ms = 6;
+  int32 chat_count = 7;
+  int32 unread_chats = 8;
+  int32 unread_messages = 9;
+  // 尽力从界面读到的本机显示名；读不到则为空
+  string account_hint = 10;
+}
+
 // ---------------------------------------------------------------------------
 // 会话与消息
 // ---------------------------------------------------------------------------
@@ -139,6 +171,55 @@ message Message {
   // 客户端据此避免「监听 → 回复 → 回复又被监听到」的死循环，
   // 不需要给消息加 [bot] 之类的约定前缀。
   bool from_self = 9;
+  // Callus 增量：本地媒体附件（旧客户端忽略）。
+  repeated MediaAttachment attachments = 11;
+  // 预留稳定身份；界面无 wxid 时为空。
+  string stable_id = 12;
+}
+
+// 本地落盘的媒体引用（路径相对 CALLUS_MEDIA_DIR 或绝对路径）。
+message MediaAttachment {
+  string kind = 1;       // emotion / image / frame / ...
+  string path = 2;       // 服务端本地文件路径
+  string sha256 = 3;
+  bool sampled = 4;      // true=抽帧；false=静帧或单图
+  int32 frame_index = 5; // 抽帧序号，从 0 起
+}
+
+message ReadContextRequest {
+  string chat = 1;
+  int32 limit = 2;   // 调用方传入；<=0 表示只读当前可见窗
+}
+
+message ReadContextResponse {
+  string chat = 1;
+  repeated Message messages = 2;
+  string chat_type = 3;
+  int32 member_count = 4;
+}
+
+message ReadLatestRequest {
+  string chat = 1;
+}
+
+message ReadLatestResponse {
+  string chat = 1;
+  Message message = 2;
+  string chat_type = 3;
+  int32 member_count = 4;
+}
+
+message CaptureMessageMediaRequest {
+  string chat = 1;
+  int32 index = 2;
+  int32 max_frames = 3;     // 默认由服务决定（常见 8）
+  int32 interval_ms = 4;    // 帧间隔，默认 200
+}
+
+message CaptureMessageMediaResponse {
+  bool ok = 1;
+  string detail = 2;
+  repeated MediaAttachment attachments = 3;
 }
 
 message ListMessagesRequest {

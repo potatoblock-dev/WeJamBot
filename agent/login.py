@@ -101,6 +101,30 @@ class LoginMachine:
                 "fetched_unix_ms": self._qr_fetched,
             }
 
+    def _remember_qr(self, payload: str) -> bool:
+        """Store a decoded login QR. Return True when the contents changed."""
+        rev = hashlib.sha256(payload.encode()).hexdigest()[:12]
+        with self._lock:
+            changed = rev != self._qr_revision
+            self._qr_payload = payload
+            self._qr_revision = rev
+            self._qr_fetched = int(time.time() * 1000)
+        return changed
+
+    def read_screen_qr(self) -> dict | None:
+        """Decode the QR on the WeChat screen now and update the cache.
+
+        The poller only writes the cache while it still classifies the screen
+        as the QR phase. A stale classification kept handing the console an
+        old code after WeChat had already rotated it.
+        """
+        payload = screen.decode_qr()
+        if not payload:
+            return None
+        if self._remember_qr(payload):
+            self._publish()
+        return self.qr()
+
     def uptime_ms(self):
         return int((time.time() - self._started_at) * 1000)
 
@@ -153,23 +177,24 @@ class LoginMachine:
             time.sleep(self.poll_interval)
 
     def _tick(self):
+        """Poll the visible UI and keep the cached QR aligned with the screen."""
         nodes = accessibility.walk_all(only_visible=True)
         phase, markers = classify(nodes)
         detail = ",".join(markers) if markers else f"{len(nodes)} 个可见节点"
+        # 「当前登录用户」会压过扫码界面。只要屏幕上还有二维码，就重新解码。
+        show_qr = phase == PHASE_QR_READY or any(
+            n.get("name") == "二维码" or "扫码登录" in f"{n.get('name', '')}{n.get('text', '')}"
+            for n in nodes
+        )
 
-        if phase == PHASE_QR_READY:
+        if show_qr:
             payload = screen.decode_qr()
             qr_changed = False
             if payload:
-                rev = hashlib.sha256(payload.encode()).hexdigest()[:12]
-                with self._lock:
-                    qr_changed = rev != self._qr_revision
-                    self._qr_payload = payload
-                    self._qr_revision = rev
-                    self._qr_fetched = int(time.time() * 1000)
+                qr_changed = self._remember_qr(payload)
                 if qr_changed:
-                    detail = f"二维码已就绪 ({rev})"
-            else:
+                    detail = f"二维码已就绪 ({self.qr()['revision']})"
+            elif phase == PHASE_QR_READY:
                 detail = "二维码界面，但未解出内容"
             # 先按 phase 变化决定是否推送（_set_phase 内部处理）
             self._set_phase(phase, markers, detail)

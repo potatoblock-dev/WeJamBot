@@ -1,9 +1,11 @@
-"""Send model output as WeChat text bubbles via WeJamHands."""
+"""Send model output as WeChat text bubbles through WeChatEyes."""
 
 from __future__ import annotations
 
 import logging
 import re
+
+from bot.eyes import HandsRejected, WeChatEyes
 
 _log = logging.getLogger(__name__)
 
@@ -27,27 +29,35 @@ def split_bubbles(text: str) -> list[str]:
 
 
 class TextSender:
-    """Wrap WeJamHands.send_text for one open connection."""
+    """Split a reply into bubbles and send each one through WeChatEyes."""
 
-    def __init__(self, hands: object) -> None:
+    def __init__(self, hands: WeChatEyes) -> None:
+        """Keep the eyes handle used for every bubble in this connection."""
         self._hands = hands
 
     def send(self, chat: str, text: str) -> bool:
-        """Send one bubble; return False when the driver reports failure."""
-        result = self._hands.send_text(chat, text)
-        ok = bool(getattr(result, "ok", False))
-        if not ok:
-            detail = str(getattr(result, "detail", "") or "")
-            _log.warning("send_text failed chat=%s detail=%s", chat, detail)
-        return ok
+        """Send one bubble. False when the eyes reject it; transport errors propagate."""
+        try:
+            self._hands.send_text(chat, text)
+        except HandsRejected as exc:
+            _log.warning("send_text failed chat=%s detail=%s", chat, exc)
+            return False
+        return True
 
     def send_bubbles(self, chat: str, reply: str) -> bool:
-        """Send each --- split bubble; True if at least one send succeeded."""
+        """Send each --- split bubble; True only when every bubble succeeds."""
         bubbles = split_bubbles(reply)
         if not bubbles:
             return False
-        delivered = False
+        sent = 0
         for bubble in bubbles:
-            if self.send(chat, bubble):
-                delivered = True
-        return delivered
+            if not self.send(chat, bubble):
+                _log.warning(
+                    "send_bubbles partial chat=%s sent=%s/%s",
+                    chat,
+                    sent,
+                    len(bubbles),
+                )
+                return False
+            sent += 1
+        return True

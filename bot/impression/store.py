@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SAFE_ID = re.compile(r"[^A-Za-z0-9_-]+")
-
 
 def _safe_filename(user_key: str) -> str:
-    """Turn a session key into a single path component."""
-    name = _SAFE_ID.sub("_", user_key.strip()) or "unknown"
-    return name[:80]
+    """Hash a session key into a stable path component (avoids Chinese key collisions)."""
+    digest = hashlib.sha256(user_key.strip().encode("utf-8")).hexdigest()[:32]
+    return digest or "unknown"
 
 
 class ImpressionStore:
@@ -59,6 +57,14 @@ class ImpressionStore:
             record["username"] = username
         self.save(record)
         return self.load(user_key)
+
+    def delete(self, user_key: str) -> bool:
+        """Remove the impression JSON for this key; return True when a file was deleted."""
+        path = self.path_for(user_key)
+        if not path.is_file():
+            return False
+        path.unlink()
+        return True
 
     def list_records(self) -> list[dict[str, Any]]:
         """Load every impression JSON on disk."""

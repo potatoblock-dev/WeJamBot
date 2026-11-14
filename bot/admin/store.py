@@ -13,8 +13,12 @@ from bot.admin import bot_control, docker_control, env_settings
 from bot.admin.docker_control import DockerSnapshot
 from bot.allowlist import load_allow_chats, save_allow_chats
 from bot.config import load_settings
+from bot.group_culture.store import GroupCultureStore
+from bot.bot_mode import bot_mode_label, load_bot_mode, save_bot_mode, toggle_bot_mode
+from bot.identity.directory import IdentityDirectory
 from bot.impression.store import ImpressionStore
 from bot.personas.catalog import PersonaCatalog
+from bot.prompt_evolution.store import PromptEvolutionStore
 from bot.reply_policy import (
     SPEAK_MODES,
     guard_list_to_lines,
@@ -26,9 +30,13 @@ from bot.reply_policy import (
     policy_guard_lists,
     speak_mode_label,
     strip_policy_guards,
+    upsert_context_message_limit_text,
+    upsert_prompt_evolution_auto_text,
+    upsert_prompt_evolution_min_messages_text,
     upsert_speak_mode_text,
 )
 from bot.seed import seed_runtime_files
+from bot.transcript.store import TranscriptRow, TranscriptStore
 
 
 @dataclass(frozen=True)
@@ -62,6 +70,63 @@ def _persona_catalog() -> PersonaCatalog:
 def _impression_store() -> ImpressionStore:
     """Impression JSON root under data/impressions."""
     return ImpressionStore(load_settings().data_dir / "impressions")
+
+
+def _identity_directory() -> IdentityDirectory:
+    """Alias directory for person_id resolution and manual merges."""
+    settings = load_settings()
+    impressions = ImpressionStore(settings.data_dir / "impressions")
+    return IdentityDirectory(
+        settings.data_dir / "identity" / "aliases.json",
+        impressions,
+    )
+
+
+def _group_culture_store() -> GroupCultureStore:
+    """Group culture JSON root under data/group_culture."""
+    settings = load_settings()
+    seed_runtime_files(settings)
+    return GroupCultureStore(settings.data_dir / "group_culture")
+
+
+def _prompt_evolution_store() -> PromptEvolutionStore:
+    """Pending/active prompt evolution root under data/prompt_evolution."""
+    settings = load_settings()
+    seed_runtime_files(settings)
+    return PromptEvolutionStore(settings.data_dir / "prompt_evolution")
+
+
+def _transcript_store() -> TranscriptStore:
+    """Local inbound ring used by listen/observe and reply context."""
+    settings = load_settings()
+    max_messages = load_reply_settings(
+        settings.reply_policy_path
+    ).transcript_max_messages
+    return TranscriptStore(settings.data_dir / "bot.sqlite3", max_messages)
+
+
+def transcript_db_path() -> Path:
+    """Return the SQLite path that holds inbound_transcript rows."""
+    return load_settings().data_dir / "bot.sqlite3"
+
+
+def list_transcript_chats() -> list[dict[str, Any]]:
+    """Summaries for the admin transcript browser (newest activity first)."""
+    out: list[dict[str, Any]] = []
+    for chat, count, latest_at in _transcript_store().list_chats():
+        out.append(
+            {
+                "chat": chat,
+                "count": count,
+                "latest_at": latest_at,
+            }
+        )
+    return out
+
+
+def load_transcript_messages(chat: str, limit: int = 200) -> list[TranscriptRow]:
+    """Load the newest ``limit`` bubbles for one chat, oldest-first."""
+    return _transcript_store().recent(chat, limit)
 
 
 def bot_snapshot() -> BotSnapshot:
@@ -98,7 +163,7 @@ def docker_snapshot() -> DockerSnapshot:
 
 
 def start_wejam_container() -> DockerSnapshot:
-    """Start the WeChat session container via docker/run.sh."""
+    """Start or resume the WeChat session container without wiping login state."""
     docker_control.start_session()
     return docker_control.docker_snapshot()
 
@@ -240,14 +305,91 @@ def cycle_speak_mode() -> str:
     return set_speak_mode(next_speak_mode(read_speak_mode()))
 
 
+def read_context_message_limit() -> int:
+    """Return how many bubbles Callus should scroll-load before a reply."""
+    return load_reply_settings(load_settings().reply_policy_path).context_message_limit
+
+
+def set_context_message_limit(limit: int) -> int:
+    """Write context_message_limit; the next inbound message reloads it."""
+    path = load_settings().reply_policy_path
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    value = max(0, int(limit))
+    path.write_text(upsert_context_message_limit_text(text, value), encoding="utf-8")
+    return value
+
+
+def read_bot_mode() -> str:
+    """Return current global listen/reply mode."""
+    return load_bot_mode(load_settings().bot_mode_path)
+
+
+def set_bot_mode(mode: str) -> str:
+    """Write global mode; runner picks it up on the next inbound message."""
+    path = load_settings().bot_mode_path
+    save_bot_mode(path, mode)
+    return load_bot_mode(path)
+
+
+def cycle_bot_mode() -> str:
+    """Flip listen ↔ reply and persist."""
+    nxt = toggle_bot_mode(read_bot_mode())
+    return set_bot_mode(nxt)
+
+
+def bot_mode_button_label() -> str:
+    """Label for the Run-tab mode toggle (shows the current mode)."""
+    return f"模式：{bot_mode_label(read_bot_mode())}"
+
+
 def list_impressions() -> list[dict[str, Any]]:
-    """Return all impression records."""
-    return _impression_store().list_records()
+    """Return impression rows enriched with alias labels when identity exists."""
+    identity = _identity_directory()
+    persons = {row["person_id"]: row for row in identity.list_persons()}
+    records = _impression_store().list_records()
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in records:
+        key = str(record.get("user_key") or "").strip()
+        if not key:
+            continue
+        seen.add(key)
+        person = persons.get(key)
+        row = dict(record)
+        if person:
+            row["alias_labels"] = list(person.get("alias_labels") or [])
+            row["aliases"] = list(person.get("aliases") or [])
+        else:
+            row["alias_labels"] = []
+            row["aliases"] = []
+        out.append(row)
+    for person_id, person in persons.items():
+        if person_id in seen:
+            continue
+        out.append(
+            {
+                "user_key": person_id,
+                "username": person.get("username") or "",
+                "impression": person.get("impression") or "",
+                "updated_at": person.get("updated_at") or "",
+                "alias_labels": list(person.get("alias_labels") or []),
+                "aliases": list(person.get("aliases") or []),
+            }
+        )
+    return out
 
 
 def load_impression(user_key: str) -> dict[str, Any]:
-    """Load one impression by session key."""
-    return _impression_store().load(user_key)
+    """Load one impression by person_id or legacy session key."""
+    record = _impression_store().load(user_key)
+    identity = _identity_directory()
+    aliases = identity.aliases_for(user_key)
+    record["aliases"] = aliases
+    record["alias_labels"] = [
+        f"{row['chat']}:{row['nick']}" if row.get("nick") else row["chat"]
+        for row in aliases
+    ]
+    return record
 
 
 def save_impression(user_key: str, username: str, impression: str) -> Path:
@@ -257,6 +399,11 @@ def save_impression(user_key: str, username: str, impression: str) -> Path:
     record["username"] = username.strip()
     record["impression"] = impression.strip()
     return store.save(record)
+
+
+def merge_impressions(from_person_id: str, into_person_id: str) -> dict[str, Any]:
+    """Manually merge two person impression files and their nick aliases."""
+    return _identity_directory().merge(from_person_id, into_person_id)
 
 
 def read_allow_chats() -> list[str]:
@@ -269,6 +416,46 @@ def write_allow_chats(text: str) -> Path:
     """Save whitelist from a multiline editor buffer."""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     return save_allow_chats(load_settings().allow_chats_path, lines)
+
+
+def write_allow_chat_names(names: list[str] | set[str]) -> Path:
+    """Save whitelist from an explicit list of session display names."""
+    return save_allow_chats(load_settings().allow_chats_path, names)
+
+
+def read_observe_chats() -> list[str]:
+    """Return observe-only WeChat session names (archive, no reply)."""
+    names = load_allow_chats(load_settings().observe_chats_path)
+    return sorted(names)
+
+
+def write_observe_chat_names(names: list[str] | set[str]) -> Path:
+    """Save observe list from an explicit list of session display names."""
+    return save_allow_chats(load_settings().observe_chats_path, names)
+
+
+def list_wechat_conversations() -> list[str]:
+    """Return live WeChat session display names via WeJamHands.
+
+    Raises bot.eyes.HandsError (or subclass) when the container/driver is down.
+    """
+    from bot.hands import WeJamHands
+
+    settings = load_settings()
+    hands = WeJamHands(settings.wejam_target, timeout=5)
+    try:
+        rows = hands.list_conversations()
+    finally:
+        hands.close()
+    names: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        name = str(getattr(row, "name", "") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
 
 
 def tail_log_lines(lines: int = 120) -> list[str]:
@@ -303,6 +490,112 @@ def personas_dir() -> Path:
     path = load_settings().personas_dir
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def knowledge_dir() -> Path:
+    """Return the local knowledge notebook folder."""
+    settings = load_settings()
+    seed_runtime_files(settings)
+    path = settings.data_dir / "knowledge"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def list_group_cultures() -> list[dict[str, Any]]:
+    """Return all group-culture records."""
+    return _group_culture_store().list_records()
+
+
+def load_group_culture(chat: str) -> dict[str, Any]:
+    """Load one group culture by WeChat chat title."""
+    return _group_culture_store().load(chat)
+
+
+def save_group_culture(chat: str, label: str, culture: str) -> Path:
+    """Create or update one group's culture file."""
+    culture_store = _group_culture_store()
+    record = culture_store.load(chat)
+    record["label"] = label.strip()
+    record["culture"] = culture.strip()
+    return culture_store.save(record)
+
+
+def clear_group_culture(chat: str) -> Path:
+    """Wipe culture body but keep the chat record."""
+    return _group_culture_store().clear_culture(chat)
+
+
+def group_culture_display_label(record: dict[str, Any]) -> str:
+    """Short label for the admin list."""
+    return _group_culture_store().display_label(record)
+
+
+def list_prompt_evolution_pending() -> list[dict[str, Any]]:
+    """Return pending prompt-evolution proposals, newest first."""
+    return _prompt_evolution_store().list_pending()
+
+
+def list_prompt_evolution_active() -> list[dict[str, Any]]:
+    """Return approved per-group prompt overlays."""
+    return _prompt_evolution_store().list_active()
+
+
+def load_prompt_evolution_pending(proposal_id: str) -> dict[str, Any] | None:
+    """Load one pending proposal by id."""
+    return _prompt_evolution_store().load_pending(proposal_id)
+
+
+def approve_prompt_evolution(proposal_id: str) -> dict[str, Any] | None:
+    """Approve pending → active overlay for that chat."""
+    return _prompt_evolution_store().approve_pending(proposal_id)
+
+
+def reject_prompt_evolution(proposal_id: str) -> bool:
+    """Delete a pending proposal without applying it."""
+    return _prompt_evolution_store().reject_pending(proposal_id)
+
+
+def disable_prompt_evolution(chat: str) -> bool:
+    """Remove the approved overlay for a chat."""
+    return _prompt_evolution_store().disable_active(chat)
+
+
+def prompt_evolution_display_label(record: dict[str, Any]) -> str:
+    """Short label for evolution list rows."""
+    return _prompt_evolution_store().display_label(record)
+
+
+def prompt_evolution_settings() -> tuple[bool, int]:
+    """Return (auto_enabled, min_messages) from reply_policy.toml."""
+    settings = load_reply_settings(load_settings().reply_policy_path)
+    return (
+        bool(settings.prompt_evolution_auto),
+        int(settings.prompt_evolution_min_messages),
+    )
+
+
+def set_prompt_evolution_auto(enabled: bool) -> Path:
+    """Write prompt_evolution_auto into reply_policy.toml."""
+    path = load_settings().reply_policy_path
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    path.write_text(upsert_prompt_evolution_auto_text(text, enabled), encoding="utf-8")
+    return path
+
+
+def set_prompt_evolution_min_messages(min_messages: int) -> Path:
+    """Write prompt_evolution_min_messages into reply_policy.toml."""
+    path = load_settings().reply_policy_path
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    path.write_text(
+        upsert_prompt_evolution_min_messages_text(text, min_messages),
+        encoding="utf-8",
+    )
+    return path
+
+
+def set_prompt_evolution_interval(seconds: float) -> Path:
+    """Deprecated alias: former seconds spinner now writes message count."""
+    return set_prompt_evolution_min_messages(int(seconds))
 
 
 def reveal_in_file_manager(path: Path) -> Path:

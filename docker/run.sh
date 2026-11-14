@@ -1,15 +1,14 @@
 #!/bin/bash
-# 启动 WeJamBot 会话容器。
+# 启动 / 恢复 WeJamBot 会话容器。
 #
-# 可移植性设计（这是本脚本的全部意义）：
-#   * 不挂载宿主的任何路径 —— 微信、agent、stub 全在镜像里
-#   * 不使用 --network host —— 只 publish 一个本地端口，Docker Desktop 同样可用
-#   * 状态放命名卷 —— 与代码目录解耦，容器重建不丢登录态
-#   * machine-id 由 entrypoint 在卷里持久化 —— 设备指纹稳定，不会反复要求扫码
+# 可移植性设计：
+#   * 不挂载宿主代码路径 —— 微信与 agent 在镜像里
+#   * 只 publish 本地端口
+#   * 状态在命名卷里；**已有容器只 docker start，不 rm**，以保留登录态
 #
 # 用法:
-#   ./run.sh                  # 默认 127.0.0.1:7700
-#   WEJAM_PORT=8123 ./run.sh  # 换端口
+#   ./run.sh
+#   WEJAM_NAME=callus-session WEJAM_PORT=7701 WEJAM_VOLUME=callus-data ./run.sh
 set -eu
 
 NAME="${WEJAM_NAME:-wejam-session}"
@@ -17,7 +16,6 @@ IMAGE="${WEJAM_IMAGE:-wejam/wechat:latest}"
 VOLUME="${WEJAM_VOLUME:-wejam-data}"
 PORT="${WEJAM_PORT:-7700}"
 
-# GUI / 非登录 shell 常没有 ~/.local/bin；允许 DOCKER_BIN 或本机常见路径。
 if [[ -z "${DOCKER_BIN:-}" ]]; then
     if command -v docker >/dev/null 2>&1; then
         DOCKER_BIN="$(command -v docker)"
@@ -33,16 +31,28 @@ if [[ -z "${DOCKER_BIN:-}" ]]; then
     fi
 fi
 
-"$DOCKER_BIN" rm -f "$NAME" >/dev/null 2>&1 || true
 "$DOCKER_BIN" volume create "$VOLUME" >/dev/null
 
-"$DOCKER_BIN" run -d --name "$NAME" \
-    -p "127.0.0.1:${PORT}:7700" \
-    -v "${VOLUME}:/data" \
-    --restart unless-stopped \
-    "$IMAGE"
+# Prefer resume: never rm a container that already holds WeChat login data.
+if "$DOCKER_BIN" inspect "$NAME" >/dev/null 2>&1; then
+    state="$("$DOCKER_BIN" inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null || echo false)"
+    if [[ "$state" == "true" ]]; then
+        echo "容器 $NAME 已在运行（保留登录态）"
+    else
+        echo "恢复已有容器 $NAME …"
+        "$DOCKER_BIN" start "$NAME" >/dev/null
+        echo "容器 $NAME 已启动（卷 $VOLUME，登录数据保留）"
+    fi
+else
+    echo "创建新容器 $NAME …"
+    "$DOCKER_BIN" run -d --name "$NAME" \
+        -p "127.0.0.1:${PORT}:7700" \
+        -v "${VOLUME}:/data" \
+        --restart unless-stopped \
+        "$IMAGE"
+    echo "容器 $NAME 已创建并启动"
+fi
 
-echo "容器 $NAME 已启动"
 echo "  gRPC   : 127.0.0.1:${PORT}"
 echo "  状态卷 : ${VOLUME}"
 echo

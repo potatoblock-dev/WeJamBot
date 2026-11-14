@@ -70,10 +70,16 @@ def _read_about_panel():
 DANGEROUS = ("退出", "注销", "清空", "删除", "撤回", "解散")
 
 
+def name_is_dangerous(name: str) -> bool:
+    """True when a UI label contains a blacklisted irreversible action word."""
+    text = name or ""
+    return any(bad in text for bad in DANGEROUS)
+
+
 def _click(role, name):
     from . import geometry
     from . import input as inputmod
-    if any(bad in name for bad in DANGEROUS):
+    if name_is_dangerous(name):
         return False
     rect = geometry.node_physical_rect(role, name)
     if not rect:

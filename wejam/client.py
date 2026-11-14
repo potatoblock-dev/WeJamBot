@@ -53,11 +53,27 @@ class Client:
         """订阅登录状态变化，逐条 yield。"""
         return self._stub.WatchLogin(wejam_pb2.WatchLoginRequest(), timeout=timeout)
 
-    def qr_code(self):
-        return self._stub.GetLoginQRCode(wejam_pb2.GetLoginQRCodeRequest(), timeout=self.timeout)
+    def qr_code(self, refresh=False):
+        """Pull the login QR. refresh=True re-decodes the code on screen."""
+        metadata = (("x-wejam-qr-refresh", "1"),) if refresh else None
+        return self._stub.GetLoginQRCode(
+            wejam_pb2.GetLoginQRCodeRequest(),
+            timeout=self.timeout,
+            metadata=metadata,
+        )
 
     def submit_login(self):
         return self._stub.SubmitLogin(wejam_pb2.SubmitLoginRequest(), timeout=self.timeout)
+
+    def logout(self):
+        """Sign out of the current WeChat account inside the container."""
+        return self._stub.Logout(wejam_pb2.LogoutRequest(), timeout=self.timeout)
+
+    def account_summary(self):
+        """Return login-side account summary fields for the console."""
+        return self._stub.GetAccountSummary(
+            wejam_pb2.GetAccountSummaryRequest(), timeout=self.timeout
+        )
 
     # ---------- 会话与消息 ----------
     def list_chats(self):
@@ -78,6 +94,26 @@ class Client:
     def invoke_message(self, chat, index, action):
         req = wejam_pb2.InvokeMessageRequest(chat=chat, index=index, action=action)
         return self._stub.InvokeMessage(req, timeout=self.timeout)
+
+    def read_context(self, chat="", limit=0):
+        """Callus additive: scroll-collect up to limit messages (caller owns limit)."""
+        req = wejam_pb2.ReadContextRequest(chat=chat, limit=limit)
+        return self._stub.ReadContext(req, timeout=self.timeout)
+
+    def read_latest(self, chat=""):
+        """Callus additive: newest bubble including sender, no scroll wait."""
+        req = wejam_pb2.ReadLatestRequest(chat=chat)
+        return self._stub.ReadLatest(req, timeout=self.timeout)
+
+    def capture_message_media(self, chat, index, max_frames=0, interval_ms=0):
+        """Callus additive: crop bubble media / sample sticker frames."""
+        req = wejam_pb2.CaptureMessageMediaRequest(
+            chat=chat,
+            index=index,
+            max_frames=max_frames,
+            interval_ms=interval_ms,
+        )
+        return self._stub.CaptureMessageMedia(req, timeout=self.timeout)
 
     def get_badges(self):
         return self._stub.GetBadges(wejam_pb2.GetBadgesRequest(), timeout=self.timeout)

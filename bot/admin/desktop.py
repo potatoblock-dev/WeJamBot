@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import os
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QObject, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QAction,
     QCloseEvent,
@@ -16,11 +18,13 @@ from PyQt6.QtGui import (
     QKeySequence,
     QMouseEvent,
     QPixmap,
+    QResizeEvent,
 )
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -37,6 +41,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -106,91 +111,281 @@ class _DockerPowerWorker(QObject):
             self.finished.emit(exc)
 
 
-class _FrameGrabWorker(QObject):
-    """Fetch one Xvfb PNG off the UI thread."""
+class _QrFetchWorker(QObject):
+    """Fetch the login QR off the UI thread so the button can show progress."""
 
-    finished = pyqtSignal(object, str)
+    finished = pyqtSignal(object, str, str)
+
+    def __init__(self, target: str) -> None:
+        """Remember the gRPC target for this fetch."""
+        super().__init__()
+        self._target = target
 
     def run(self) -> None:
-        """Capture the container root window, or return an error string."""
+        """Load QR PNG bytes. The third signal field is an error, or empty."""
         try:
-            png, err = wechat_view.capture_png()
-        except Exception as exc:  # noqa: BLE001 — keep the dialog alive
-            self.finished.emit(None, str(exc))
+            png, revision = wejam_status.fetch_qr_png(self._target)
+        except Exception as exc:  # noqa: BLE001 — show driver errors on the label
+            self.finished.emit(None, "", str(exc))
             return
-        self.finished.emit(png, err)
+        if not png:
+            self.finished.emit(None, revision or "", "当前没有二维码内容（可能已登录，或不在扫码界面）")
+            return
+        self.finished.emit(bytes(png), revision or "", "")
+
+
+class _AccountRefreshWorker(QObject):
+    """Fetch GetAccountSummary off the UI thread.
+
+    That RPC scrapes the chat list and badges and takes a few seconds.
+    Running it on the poll timer froze the whole console.
+    """
+
+    finished = pyqtSignal(object)
+
+    def __init__(self, target: str) -> None:
+        """Remember the gRPC target for the background fetch."""
+        super().__init__()
+        self._target = target
+
+    def run(self) -> None:
+        """Load the account summary; errors stay on the returned view."""
+        self.finished.emit(wejam_status.account_summary(self._target))
+
+
+class _WeChatViewBridge(QObject):
+    """Marshal background grab/input results onto the UI thread."""
+
+    frame_ready = pyqtSignal(object, str)
+    input_done = pyqtSignal(str, bool)
+
+
+class _WeChatViewLabel(QLabel):
+    """Centered frame label that forwards mouse presses for remote clicks."""
+
+    clicked = pyqtSignal(float, float, int)
+
+    def mousePressEvent(self, event: QMouseEvent | None) -> None:
+        """Forward left/right clicks as label-local coordinates."""
+        if event is None:
+            return
+        button = event.button()
+        if button == Qt.MouseButton.LeftButton:
+            code = 1
+        elif button == Qt.MouseButton.RightButton:
+            code = 3
+        else:
+            super().mousePressEvent(event)
+            return
+        pos = event.position()
+        self.clicked.emit(float(pos.x()), float(pos.y()), code)
 
 
 class _WeChatViewDialog(QDialog):
-    """Non-modal window that shows the WeChat screen and accepts no input."""
+    """Non-modal window that shows the WeChat screen and can click/type into it."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("微信画面（只读·仅遗留 GUI 桥）")
+        self.setWindowTitle("微信画面（可操作）")
         self.setModal(False)
         self.resize(960, 680)
         self._png = b""
-        self._thread: QThread | None = None
-        self._busy = False
-        self._label = QLabel("正在抓取…")
+        self._frame_w = 0
+        self._frame_h = 0
+        self._grab_busy = False
+        self._input_busy = False
+        self._pending_refresh = False
+        self._closed = False
+        self._grab_started_at = 0.0
+        self._input_started_at = 0.0
+        self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="wechat-view")
+        self._bridge = _WeChatViewBridge(self)
+        self._bridge.frame_ready.connect(self._on_frame_ready)
+        self._bridge.input_done.connect(self._on_input_done)
+        self._status = QLabel(
+            "点击画面即可操作容器内微信；Esc / Enter 会注入到容器。"
+        )
+        self._status.setProperty("role", "muted")
+        self._status.setWordWrap(True)
+        self._label = _WeChatViewLabel("正在抓取…")
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._label.setMinimumSize(640, 400)
+        self._label.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._label.clicked.connect(self._on_label_click)
         layout = QVBoxLayout(self)
-        layout.addWidget(self._label)
-        self.installEventFilter(self)
+        layout.addWidget(self._status)
+        layout.addWidget(self._label, stretch=1)
         self._timer = QTimer(self)
-        self._timer.setInterval(1000)
+        self._timer.setInterval(750)
         self._timer.timeout.connect(self._grab)
+        self._watchdog = QTimer(self)
+        self._watchdog.setInterval(3000)
+        self._watchdog.timeout.connect(self._reset_if_stuck)
         self._timer.start()
+        self._watchdog.start()
         self._grab()
 
-    def eventFilter(self, watched: object, event: QEvent) -> bool:
-        """Drop key and mouse events so this window cannot drive WeChat."""
-        if event.type() in (
-            QEvent.Type.KeyPress,
-            QEvent.Type.KeyRelease,
-            QEvent.Type.MouseButtonPress,
-            QEvent.Type.MouseButtonRelease,
-            QEvent.Type.MouseButtonDblClick,
-        ):
-            return True
-        return super().eventFilter(watched, event)
+    def keyPressEvent(self, event: object) -> None:
+        """Map a few keys onto the container X display."""
+        from PyQt6.QtGui import QKeyEvent
 
-    def _grab(self) -> None:
-        """Start one capture if the previous grab has finished."""
-        if self._busy:
+        if not isinstance(event, QKeyEvent):
+            super().keyPressEvent(event)  # type: ignore[arg-type]
             return
-        self._busy = True
-        thread = QThread(self)
-        worker = _FrameGrabWorker()
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(lambda png, err: self._grab_done(png, err, thread, worker))
-        self._thread = thread
-        thread.start()
+        key = event.key()
+        mapping = {
+            Qt.Key.Key_Escape: "Escape",
+            Qt.Key.Key_Return: "Return",
+            Qt.Key.Key_Enter: "Return",
+            Qt.Key.Key_Backspace: "BackSpace",
+            Qt.Key.Key_Tab: "Tab",
+        }
+        keysym = mapping.get(key)
+        if keysym is None:
+            super().keyPressEvent(event)
+            return
+        self._inject_key(keysym)
 
-    def _grab_done(
-        self,
-        png: object,
-        err: str,
-        thread: QThread,
-        worker: _FrameGrabWorker,
-    ) -> None:
-        """Show the new frame or a short status line."""
-        thread.quit()
-        thread.wait(2000)
-        worker.deleteLater()
-        thread.deleteLater()
-        self._thread = None
-        self._busy = False
+    def _on_label_click(self, lx: float, ly: float, button: int) -> None:
+        """Map label coordinates onto the Xvfb frame and inject a click."""
+        mapped = wechat_view.map_label_to_frame(
+            lx,
+            ly,
+            self._label.width(),
+            self._label.height(),
+            self._frame_w,
+            self._frame_h,
+        )
+        if mapped is None:
+            self._status.setText("点在画面外，未发送")
+            return
+        fx, fy = mapped
+        self._inject_click(fx, fy, button)
+
+    def _inject_click(self, x: int, y: int, button: int) -> None:
+        """Queue one remote click without blocking the UI."""
+        if self._input_busy or self._closed:
+            return
+        self._input_busy = True
+        self._input_started_at = time.monotonic()
+        self._status.setText(f"点击 ({x}, {y})…")
+        self._ensure_pool()
+
+        def work() -> None:
+            try:
+                err = wechat_view.click_at(x, y, button=button)
+            except Exception as exc:  # noqa: BLE001 — keep the dialog alive
+                err = str(exc)
+            if not self._closed:
+                self._bridge.input_done.emit(err, True)
+
+        self._pool.submit(work)
+
+    def _inject_key(self, keysym: str) -> None:
+        """Queue one remote key tap without blocking the UI."""
+        if self._input_busy or self._closed:
+            return
+        self._input_busy = True
+        self._input_started_at = time.monotonic()
+        self._status.setText(f"按键 {keysym}…")
+        self._ensure_pool()
+
+        def work() -> None:
+            try:
+                err = wechat_view.tap_key(keysym)
+            except Exception as exc:  # noqa: BLE001 — keep the dialog alive
+                err = str(exc)
+            if not self._closed:
+                self._bridge.input_done.emit(err, True)
+
+        self._pool.submit(work)
+
+    def _on_input_done(self, err: str, refresh: bool) -> None:
+        """Clear input busy state and optionally refresh the frame."""
+        self._input_busy = False
+        if self._closed:
+            return
+        if err:
+            self._status.setText(err)
+            return
+        self._status.setText("已发送，正在刷新画面…")
+        if refresh:
+            self._grab(force=True)
+
+    def _grab(self, *, force: bool = False) -> None:
+        """Start one capture if the previous grab has finished."""
+        if self._closed:
+            return
+        if self._grab_busy and not force:
+            return
+        if self._grab_busy and force:
+            # A click just happened: allow a queued refresh after the in-flight grab.
+            self._pending_refresh = True
+            return
+        self._pending_refresh = False
+        self._grab_busy = True
+        self._grab_started_at = time.monotonic()
+        self._ensure_pool()
+
+        def work() -> None:
+            try:
+                png, err = wechat_view.capture_png()
+            except Exception as exc:  # noqa: BLE001 — keep the dialog alive
+                png, err = None, str(exc)
+            if not self._closed:
+                self._bridge.frame_ready.emit(png, err or "")
+
+        self._pool.submit(work)
+
+    def _on_frame_ready(self, png: object, err: str) -> None:
+        """Show the new frame or a short status line; never block the UI thread."""
+        self._grab_busy = False
+        if self._closed:
+            return
+        pending = self._pending_refresh
+        self._pending_refresh = False
         if not isinstance(png, (bytes, bytearray)) or not png:
             self._png = b""
+            self._frame_w = 0
+            self._frame_h = 0
             self._label.setPixmap(QPixmap())
             self._label.setText(err or "容器未开启")
+            if pending:
+                self._grab()
             return
         self._png = bytes(png)
+        self._frame_w, self._frame_h = wechat_view.png_size(self._png)
         self._label.setText("")
         self._paint()
+        if not self._input_busy and (
+            self._status.text().startswith("已发送")
+            or self._status.text().endswith("…")
+        ):
+            self._status.setText(
+                "点击画面即可操作容器内微信；Esc / Enter 会注入到容器。"
+            )
+        if pending:
+            self._grab()
+
+    def _ensure_pool(self) -> None:
+        """Recreate the worker pool after the dialog was closed and reopened."""
+        pool = self._pool
+        if pool is not None and not getattr(pool, "_shutdown", False):
+            return
+        self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="wechat-view")
+
+    def _reset_if_stuck(self) -> None:
+        """Unstick grab/input flags if a worker vanished without callback."""
+        if self._closed:
+            return
+        now = time.monotonic()
+        if self._grab_busy and self._grab_started_at and now - self._grab_started_at > 10:
+            self._grab_busy = False
+            self._status.setText("抓图超时已复位，继续刷新…")
+            self._grab()
+        if self._input_busy and self._input_started_at and now - self._input_started_at > 10:
+            self._input_busy = False
+            self._status.setText("操作超时已复位，可再点一次")
 
     def _paint(self) -> None:
         """Scale the last PNG into the label without changing aspect ratio."""
@@ -219,18 +414,60 @@ class _WeChatViewDialog(QDialog):
     def showEvent(self, event: object) -> None:
         """Resume grabbing each time the window is shown again."""
         super().showEvent(event)  # type: ignore[arg-type]
+        self._closed = False
+        self._grab_busy = False
+        self._input_busy = False
+        self._ensure_pool()
         if not self._timer.isActive():
             self._timer.start()
-            self._grab()
+        if not self._watchdog.isActive():
+            self._watchdog.start()
+        self._grab(force=True)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Stop grabbing when the window closes."""
+        """Stop timers and reject late worker callbacks; keep pool for reopen."""
+        self._closed = True
         self._timer.stop()
-        thread = self._thread
-        if thread is not None:
-            thread.quit()
-            thread.wait(2000)
+        self._watchdog.stop()
         super().closeEvent(event)
+
+
+class _TightHint(QLabel):
+    """Word-wrapped intro line that stays as tall as its wrapped text.
+
+    A plain QLabel is vertically Preferred, so extra window height centers
+    the sentence in a tall empty band. Capping at the wrapped height keeps
+    the gap to the page margins.
+    """
+
+    def __init__(self, text: str) -> None:
+        """Show muted wrapping copy without soaking up vertical space."""
+        super().__init__(text)
+        self.setWordWrap(True)
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+
+    def hasHeightForWidth(self) -> bool:
+        """Let the layout ask for height from the current width."""
+        return True
+
+    def sizeHint(self) -> QSize:
+        """Height of this text wrapped at the label's current width."""
+        width = self.width() if self.width() > 80 else 640
+        line = self.fontMetrics().lineSpacing()
+        return QSize(0, max(self.heightForWidth(width), line))
+
+    def minimumSizeHint(self) -> QSize:
+        """Keep the row shrinkable down to one line."""
+        return QSize(0, self.fontMetrics().lineSpacing())
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        """Remeasure after the wrap width changes."""
+        super().resizeEvent(event)
+        if event.oldSize().width() != event.size().width():
+            self.updateGeometry()
 
 
 class AdminWindow(QMainWindow):
@@ -247,6 +484,8 @@ class AdminWindow(QMainWindow):
         self._allow_dirty = False
         self._allow_loading = False
         self._allow_live_names: list[str] = []
+        self._observe_dirty = False
+        self._observe_loading = False
         self._imp_dirty = False
         self._imp_loading = False
         self._imp_key = ""
@@ -257,9 +496,18 @@ class AdminWindow(QMainWindow):
         self._culture_chat = ""
         self._culture_editing_new = False
         self._culture_records: list[dict] = []
+        self._transcript_rows: list[dict] = []
+        self._evo_pending_id = ""
+        self._evo_active_chat = ""
+        self._evo_pending_rows: list[dict] = []
+        self._evo_active_rows: list[dict] = []
         self._log_clear_armed = False
         self._power_thread: QThread | None = None
         self._docker_thread: QThread | None = None
+        self._account_thread: QThread | None = None
+        self._account_quiet = True
+        self._qr_thread: QThread | None = None
+        self._qr_worker: _QrFetchWorker | None = None
         self._view_dialog: _WeChatViewDialog | None = None
         self._docker_poll_tick = 0
         self._login_poll_tick = 0
@@ -319,9 +567,11 @@ class AdminWindow(QMainWindow):
         tabs.addTab(self._build_features_tab(), "Bot 设置")
         tabs.addTab(self._build_api_tab(), "API")
         tabs.addTab(self._build_persona_tab(), "人设")
+        tabs.addTab(self._build_prompt_evolution_tab(), "提示词进化")
         tabs.addTab(self._build_policy_tab(), "回复策略")
         tabs.addTab(self._build_impressions_tab(), "印象")
         tabs.addTab(self._build_group_culture_tab(), "群文化")
+        tabs.addTab(self._build_transcript_tab(), "聊天记录")
         self.setCentralWidget(tabs)
 
         save_act = QAction("保存", self)
@@ -338,8 +588,14 @@ class AdminWindow(QMainWindow):
         self._status_label = QLabel("检查中…")
         self._status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         row.addWidget(self._status_label, stretch=1)
+        self._btn_mode = QPushButton("模式：监听")
+        self._btn_mode.setToolTip(
+            "监听：只旁听/写档，不回复（白名单会话也会改走旁听）。"
+            "回复：按白名单正常回复。下一条消息生效，不必重启。"
+        )
         self._btn_toggle = QPushButton("启动")
         self._btn_refresh = QPushButton("刷新")
+        row.addWidget(self._btn_mode)
         row.addWidget(self._btn_toggle)
         row.addWidget(self._btn_refresh)
         layout.addWidget(box)
@@ -367,10 +623,13 @@ class AdminWindow(QMainWindow):
         layout.addWidget(docker_box)
 
         hint = QLabel(
+            "「模式：监听/回复」切换后下一条消息即生效，不必重启。"
+            "监听时不回复，白名单会话也会走旁听写档；回复时按白名单正常回复。"
             "人设与 reply_policy 保存后下一条消息即生效。"
             "改代码后先点停止再启动。"
-            "微信容器用上方开关启停（等价 bash docker/run.sh）。"
-            "「打开画面」只观看容器里的微信，不能点击或输入。"
+            "微信容器「启动」会复用已有容器与数据卷（不删容器），以保留登录态；"
+            "仅「停止容器」会停进程，再次启动一般可回到已登录/一键登录。"
+            "「打开画面」可交互容器内微信。"
         )
         hint.setWordWrap(True)
         hint.setProperty("role", "muted")
@@ -492,6 +751,34 @@ class AdminWindow(QMainWindow):
         allow_l.addLayout(allow_row)
         layout.addWidget(allow)
 
+        observe = QGroupBox("旁听会话")
+        observe_l = QVBoxLayout(observe)
+        observe_hint = QLabel(
+            "勾选只写印象/群文化（及可选提示词进化）、不回复的会话。"
+            "与白名单重叠时以回复为准。点「刷新会话列表」与白名单共用同一批会话名。"
+            "群改名后显示名会变，须重新勾选并保存旁听名单。"
+            "旁听命中会写入本地全文环缓冲（见「聊天记录」页 / data/bot.sqlite3）；"
+            "档案按条数/间隔批量更新。"
+        )
+        observe_hint.setWordWrap(True)
+        observe_hint.setProperty("role", "muted")
+        observe_l.addWidget(observe_hint)
+        self._observe_list = QListWidget()
+        self._observe_list.setMinimumHeight(160)
+        observe_l.addWidget(self._observe_list)
+        self._observe_summary = QLabel("")
+        self._observe_summary.setWordWrap(True)
+        self._observe_summary.setProperty("role", "muted")
+        observe_l.addWidget(self._observe_summary)
+        observe_row = QHBoxLayout()
+        self._btn_refresh_observe = QPushButton("刷新会话列表")
+        self._btn_save_observe = QPushButton("保存旁听名单")
+        observe_row.addWidget(self._btn_refresh_observe)
+        observe_row.addWidget(self._btn_save_observe)
+        observe_row.addStretch()
+        observe_l.addLayout(observe_row)
+        layout.addWidget(observe)
+
         files = QGroupBox("本地文件")
         file_row = QHBoxLayout(files)
         self._btn_personas_folder = QPushButton("打开人设")
@@ -539,6 +826,19 @@ class AdminWindow(QMainWindow):
         form.addRow("", self._api_key_hint)
         form.addRow("LLM_MODEL", self._api_llm_model)
         form.addRow("LLM_TIMEOUT_SECONDS", self._api_timeout)
+        self._api_archive_base = QLineEdit()
+        self._api_archive_key = QLineEdit()
+        self._api_archive_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._api_archive_key.setPlaceholderText("留空=沿用 LLM_API_KEY / 不改已保存")
+        self._api_archive_model = QLineEdit()
+        self._api_archive_model.setPlaceholderText("留空=沿用 LLM_MODEL")
+        self._api_archive_base.setPlaceholderText("留空=沿用 LLM_BASE_URL")
+        self._api_archive_key_hint = QLabel("")
+        self._api_archive_key_hint.setProperty("role", "muted")
+        form.addRow("ARCHIVE_LLM_BASE_URL", self._api_archive_base)
+        form.addRow("ARCHIVE_LLM_API_KEY", self._api_archive_key)
+        form.addRow("", self._api_archive_key_hint)
+        form.addRow("ARCHIVE_LLM_MODEL", self._api_archive_model)
         layout.addLayout(form)
         layout.addStretch(1)
         actions = QHBoxLayout()
@@ -661,13 +961,21 @@ class AdminWindow(QMainWindow):
         return root
 
     def _build_impressions_tab(self) -> QWidget:
-        """Speaker impression list and editor."""
+        """Speaker impression list and editor, plus manual rename merge."""
         root = QWidget()
+        outer = QVBoxLayout(root)
+        hint = QLabel(
+            "身份按内部 person_id 存档；群昵称只是别名。"
+            "GUI 没有微信号，对方改名后请在下方把旧档案合并到新档案，勿依赖自动识别。"
+        )
+        hint.setWordWrap(True)
+        hint.setProperty("role", "muted")
+        outer.addWidget(hint)
         split = QSplitter(Qt.Orientation.Horizontal)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self._imp_search = QLineEdit()
-        self._imp_search.setPlaceholderText("按昵称或会话键搜索…")
+        self._imp_search.setPlaceholderText("按昵称、别名或 person_id 搜索…")
         left_layout.addWidget(self._imp_search)
         self._imp_list = QListWidget()
         left_layout.addWidget(self._imp_list)
@@ -682,16 +990,150 @@ class AdminWindow(QMainWindow):
         form = QFormLayout(right)
         self._imp_key_edit = QLineEdit()
         self._imp_name_edit = QLineEdit()
+        self._imp_aliases = QLabel("")
+        self._imp_aliases.setWordWrap(True)
+        self._imp_aliases.setProperty("role", "muted")
         self._imp_body = QPlainTextEdit()
-        form.addRow("会话键", self._imp_key_edit)
-        form.addRow("昵称", self._imp_name_edit)
+        form.addRow("person_id", self._imp_key_edit)
+        form.addRow("当前昵称", self._imp_name_edit)
+        form.addRow("别名", self._imp_aliases)
         form.addRow("印象", self._imp_body)
         self._btn_save_imp = QPushButton("保存印象")
         form.addRow(self._btn_save_imp)
+        merge_box = QGroupBox("改名合并（人工）")
+        merge_form = QFormLayout(merge_box)
+        self._imp_merge_from = QComboBox()
+        self._imp_merge_into = QComboBox()
+        self._btn_merge_imp = QPushButton("合并到目标")
+        self._btn_merge_imp.setToolTip(
+            "将「源」的印象与别名并入「目标」，然后删除源档案。"
+        )
+        merge_form.addRow("源档案（旧昵称）", self._imp_merge_from)
+        merge_form.addRow("目标档案（新昵称）", self._imp_merge_into)
+        merge_form.addRow(self._btn_merge_imp)
+        form.addRow(merge_box)
         split.addWidget(right)
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 2)
+        outer.addWidget(split)
+        return root
+
+    def _build_transcript_tab(self) -> QWidget:
+        """Browse local listen/reply transcript rings stored in bot.sqlite3."""
+        root = QWidget()
         outer = QVBoxLayout(root)
+        self._transcript_path_label = QLabel("")
+        self._transcript_path_label.setWordWrap(True)
+        self._transcript_path_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._transcript_path_label.setProperty("role", "muted")
+        outer.addWidget(self._transcript_path_label)
+        hint = QLabel(
+            "监听与回复命中的会话都会写入本地环缓冲（每会话最多 transcript_max_messages 条）。"
+            "此处只读浏览；清空需自行处理 SQLite 或等环缓冲自然滚动淘汰。"
+        )
+        hint.setWordWrap(True)
+        hint.setProperty("role", "muted")
+        outer.addWidget(hint)
+        tools = QHBoxLayout()
+        self._btn_transcript_refresh = QPushButton("刷新")
+        self._btn_transcript_folder = QPushButton("打开数据目录")
+        tools.addWidget(self._btn_transcript_refresh)
+        tools.addWidget(self._btn_transcript_folder)
+        tools.addWidget(QLabel("每会话条数"))
+        self._transcript_limit = QSpinBox()
+        self._transcript_limit.setRange(20, 2000)
+        self._transcript_limit.setSingleStep(20)
+        self._transcript_limit.setValue(200)
+        tools.addWidget(self._transcript_limit)
+        tools.addStretch(1)
+        outer.addLayout(tools)
+        split = QSplitter(Qt.Orientation.Horizontal)
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        self._transcript_search = QLineEdit()
+        self._transcript_search.setPlaceholderText("按会话名筛选…")
+        left_layout.addWidget(self._transcript_search)
+        self._transcript_list = QListWidget()
+        left_layout.addWidget(self._transcript_list)
+        self._transcript_summary = QLabel("尚未加载")
+        self._transcript_summary.setProperty("role", "muted")
+        left_layout.addWidget(self._transcript_summary)
+        split.addWidget(left)
+        self._transcript_body = QPlainTextEdit()
+        self._transcript_body.setReadOnly(True)
+        self._transcript_body.setPlaceholderText("左侧选一个会话查看记录。")
+        split.addWidget(self._transcript_body)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 3)
+        outer.addWidget(split)
+        return root
+
+    def _build_prompt_evolution_tab(self) -> QWidget:
+        """Pending prompt-evolution proposals and approved per-group overlays."""
+        root = QWidget()
+        outer = QVBoxLayout(root)
+        hint = _TightHint(
+            "群聊成功回复或旁听写档后可自动起草「本群进化提示词」提案；须在此批准后才会注入该群。"
+            "节流按 bot 收到的该群消息条数计。不改全局人设。默认关闭自动提案。"
+        )
+        hint.setProperty("role", "muted")
+        outer.addWidget(hint)
+        controls = QHBoxLayout()
+        self._evo_auto = QCheckBox("自动提案（prompt_evolution_auto）")
+        controls.addWidget(self._evo_auto)
+        controls.addWidget(QLabel("同群最少收到消息数"))
+        self._evo_interval = QSpinBox()
+        self._evo_interval.setRange(0, 100_000)
+        self._evo_interval.setSingleStep(10)
+        self._evo_interval.setValue(50)
+        self._evo_interval.setToolTip(
+            "两次提案之间，bot 至少再收到这么多条该群消息；0 表示不限条数（仍受 pending 阻挡）。"
+        )
+        controls.addWidget(self._evo_interval)
+        self._btn_evo_save_policy = QPushButton("保存开关")
+        controls.addWidget(self._btn_evo_save_policy)
+        controls.addStretch(1)
+        outer.addLayout(controls)
+
+        split = QSplitter(Qt.Orientation.Horizontal)
+        pending_box = QGroupBox("待审批")
+        pending_layout = QVBoxLayout(pending_box)
+        self._evo_pending_list = QListWidget()
+        pending_layout.addWidget(self._evo_pending_list)
+        pending_btns = QHBoxLayout()
+        self._btn_evo_approve = QPushButton("批准")
+        self._btn_evo_reject = QPushButton("拒绝")
+        self._btn_evo_refresh = QPushButton("刷新")
+        pending_btns.addWidget(self._btn_evo_approve)
+        pending_btns.addWidget(self._btn_evo_reject)
+        pending_btns.addWidget(self._btn_evo_refresh)
+        pending_layout.addLayout(pending_btns)
+        split.addWidget(pending_box)
+
+        detail_box = QGroupBox("提案详情 / 已生效叠加")
+        detail_form = QFormLayout(detail_box)
+        self._evo_meta = QLabel("选择左侧待审，或下方已生效项")
+        self._evo_meta.setWordWrap(True)
+        self._evo_meta.setProperty("role", "muted")
+        detail_form.addRow(self._evo_meta)
+        self._evo_rationale = QPlainTextEdit()
+        self._evo_rationale.setReadOnly(True)
+        self._evo_rationale.setMaximumHeight(80)
+        self._evo_rationale.setPlaceholderText("提案理由…")
+        detail_form.addRow("理由", self._evo_rationale)
+        self._evo_body = QPlainTextEdit()
+        self._evo_body.setReadOnly(True)
+        self._evo_body.setPlaceholderText("进化正文…")
+        detail_form.addRow("正文", self._evo_body)
+        self._evo_active_list = QListWidget()
+        detail_form.addRow("已生效", self._evo_active_list)
+        self._btn_evo_disable = QPushButton("停用选中已生效")
+        detail_form.addRow(self._btn_evo_disable)
+        split.addWidget(detail_box)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 2)
         outer.addWidget(split)
         return root
 
@@ -702,7 +1144,7 @@ class AdminWindow(QMainWindow):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         hint = QLabel(
-            "群消息成功回复后会自动更新本群备忘（可在 reply_policy.toml 关 group_culture_auto）。"
+            "群消息成功回复或旁听写档后会自动更新本群备忘（可在 reply_policy.toml 关 group_culture_auto）。"
             "此处可改写或清空；只记群梗与风向，不记个人隐私。"
         )
         hint.setWordWrap(True)
@@ -745,6 +1187,7 @@ class AdminWindow(QMainWindow):
     def _wire_actions(self) -> None:
         """Connect buttons and list selection."""
         self._btn_toggle.clicked.connect(self.on_toggle_power)
+        self._btn_mode.clicked.connect(self.on_toggle_bot_mode)
         self._btn_refresh.clicked.connect(lambda: self.refresh_status(refresh_docker=True))
         self._btn_docker_toggle.clicked.connect(self.on_toggle_docker)
         self._btn_docker_open.clicked.connect(lambda: self._docker_power("open"))
@@ -760,6 +1203,9 @@ class AdminWindow(QMainWindow):
         self._btn_save_allow.clicked.connect(self.on_save_allow)
         self._btn_refresh_allow.clicked.connect(self.on_refresh_allow_chats)
         self._allow_list.itemChanged.connect(self._mark_allow_dirty)
+        self._btn_save_observe.clicked.connect(self.on_save_observe)
+        self._btn_refresh_observe.clicked.connect(self.on_refresh_observe_chats)
+        self._observe_list.itemChanged.connect(self._mark_observe_dirty)
         self._btn_personas_folder.clicked.connect(
             lambda: store.reveal_in_file_manager(store.personas_dir())
         )
@@ -786,6 +1232,7 @@ class AdminWindow(QMainWindow):
         self._btn_save_imp.clicked.connect(self.on_save_impression)
         self._btn_new_imp.clicked.connect(self.on_new_impression)
         self._btn_import_imp.clicked.connect(self.on_import_impressions)
+        self._btn_merge_imp.clicked.connect(self.on_merge_impressions)
         self._imp_search.textChanged.connect(self.render_impressions)
         self._imp_list.currentItemChanged.connect(self.on_impression_selected)
         self._btn_save_culture.clicked.connect(self.on_save_group_culture)
@@ -796,6 +1243,24 @@ class AdminWindow(QMainWindow):
         self._culture_chat_edit.textChanged.connect(self._mark_culture_dirty)
         self._culture_label_edit.textChanged.connect(self._mark_culture_dirty)
         self._culture_body.textChanged.connect(self._mark_culture_dirty)
+        self._btn_evo_save_policy.clicked.connect(self.on_save_prompt_evolution_policy)
+        self._btn_evo_approve.clicked.connect(self.on_approve_prompt_evolution)
+        self._btn_evo_reject.clicked.connect(self.on_reject_prompt_evolution)
+        self._btn_evo_refresh.clicked.connect(self.load_prompt_evolution)
+        self._btn_evo_disable.clicked.connect(self.on_disable_prompt_evolution)
+        self._evo_pending_list.currentItemChanged.connect(
+            self.on_prompt_evolution_pending_selected
+        )
+        self._evo_active_list.currentItemChanged.connect(
+            self.on_prompt_evolution_active_selected
+        )
+        self._btn_transcript_refresh.clicked.connect(self.load_transcripts)
+        self._btn_transcript_folder.clicked.connect(
+            lambda: store.reveal_in_file_manager(store.transcript_db_path().parent)
+        )
+        self._transcript_search.textChanged.connect(self.render_transcript_chats)
+        self._transcript_list.currentItemChanged.connect(self.on_transcript_selected)
+        self._transcript_limit.valueChanged.connect(self._reload_selected_transcript)
 
     def refresh_all(self) -> None:
         """Reload every editor from disk."""
@@ -806,8 +1271,12 @@ class AdminWindow(QMainWindow):
         self.load_policy()
         self.load_impressions()
         self.load_group_cultures()
+        self.load_prompt_evolution()
+        self.load_transcripts()
         if not self._allow_dirty:
             self._reload_allow_list(live=self._allow_live_names)
+        if not self._observe_dirty:
+            self._reload_observe_list(live=self._allow_live_names)
         self._sync_speak_buttons()
 
     def refresh_status(self, *, refresh_docker: bool = True) -> None:
@@ -821,7 +1290,11 @@ class AdminWindow(QMainWindow):
         state = "运行中" if snap.running else "已停止"
         pid = f" pid={snap.pid}" if snap.pid else ""
         llm = "已配置" if snap.llm_configured else "未配置 LLM_API_KEY"
-        self._status_label.setText(f"{state}{pid} · 模型 {snap.llm_model} · {llm}")
+        mode_label = store.bot_mode_button_label().removeprefix("模式：")
+        self._status_label.setText(
+            f"{state}{pid} · {mode_label} · 模型 {snap.llm_model} · {llm}"
+        )
+        self._btn_mode.setText(store.bot_mode_button_label())
         self._btn_toggle.setText("停止" if snap.running else "启动")
         if refresh_docker:
             self._last_docker_snap = store.docker_snapshot()
@@ -889,11 +1362,36 @@ class AdminWindow(QMainWindow):
         )
 
     def _refresh_account_info(self, *, quiet: bool = False) -> None:
-        """Reload GetAccountSummary into the login tab."""
-        target = load_settings().wejam_target
-        account = wejam_status.account_summary(target)
+        """Reload GetAccountSummary on a worker so the window stays responsive."""
+        if self._account_thread is not None:
+            return
+        self._account_quiet = quiet
+        thread = QThread(self)
+        worker = _AccountRefreshWorker(load_settings().wejam_target)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(
+            lambda account, th=thread, wk=worker: self._account_refresh_done(account, th, wk)
+        )
+        self._account_thread = thread
+        thread.start()
+
+    def _account_refresh_done(
+        self,
+        account: object,
+        thread: QThread,
+        worker: _AccountRefreshWorker,
+    ) -> None:
+        """Apply a finished account summary and drop the worker thread."""
+        thread.quit()
+        thread.wait(2000)
+        worker.deleteLater()
+        thread.deleteLater()
+        self._account_thread = None
+        if not isinstance(account, wejam_status.AccountView):
+            return
         self._account_label.setText(self._format_account_text(account))
-        if account.error and not quiet:
+        if account.error and not self._account_quiet:
             QMessageBox.warning(self, "账号信息", account.error)
         elif account.logged_in:
             self._login_hint.setText("已登录")
@@ -954,7 +1452,7 @@ class AdminWindow(QMainWindow):
         elif not docker.image_present:
             tip = f"本地没有镜像 {docker.image}，需先按文档构建后再点「启动容器」。"
         elif not docker.container_running:
-            tip = "容器未开启：点下方「启动容器」（等价 bash docker/run.sh）。"
+            tip = "容器未开启：点下方「启动容器」（复用已有容器，不删登录数据）。"
         else:
             tip = "容器已开启但 gRPC 未就绪，稍等或点刷新；仍失败再点「停止容器」后重新启动。"
         err = f" {error}" if error else ""
@@ -1014,13 +1512,19 @@ class AdminWindow(QMainWindow):
         self.refresh_status(refresh_docker=True)
 
     def refresh_logs(self) -> None:
-        """Reload filtered runner logs into the monitor view."""
-        self._log_view.setHtml(log_view.format_logs_html(store.tail_log_lines()))
+        """Reload runner logs with newest lines at the top (same as 0x01)."""
+        lines = list(reversed(store.tail_log_lines()))
+        self._log_view.setHtml(log_view.format_logs_html(lines))
 
     def on_toggle_power(self) -> None:
         """Start or stop the runner on a worker thread."""
         snap = store.bot_snapshot()
         self._power("stop" if snap.running else "start")
+
+    def on_toggle_bot_mode(self) -> None:
+        """Flip global listen/reply mode; next inbound message picks it up."""
+        store.cycle_bot_mode()
+        self.refresh_status(refresh_docker=False)
 
     def _power(self, action: str) -> None:
         """Dispatch start/stop without freezing the UI; ignore re-entry while busy."""
@@ -1070,22 +1574,58 @@ class AdminWindow(QMainWindow):
         self._btn_clear_log.style().polish(self._btn_clear_log)
 
     def _refresh_qr(self) -> None:
-        """Fetch the current login QR from wejam."""
-        from PyQt6.QtGui import QPixmap
-
-        target = load_settings().wejam_target
-        try:
-            png, revision = wejam_status.fetch_qr_png(target)
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.warning(self, "二维码", str(exc))
+        """Start a QR fetch and show progress on the label immediately."""
+        if self._qr_thread is not None:
             return
-        if not png:
-            self._qr_label.setText("当前没有二维码内容（可能已登录）")
+        self._qr_label.setPixmap(QPixmap())
+        self._qr_label.setText("正在获取二维码…")
+        self._btn_qr.setEnabled(False)
+        thread = QThread(self)
+        worker = _QrFetchWorker(load_settings().wejam_target)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        # Bound method queues onto the UI thread; a lambda would run on the worker.
+        worker.finished.connect(self._qr_fetch_done)
+        self._qr_thread = thread
+        self._qr_worker = worker
+        thread.start()
+
+    def _qr_fetch_done(self, png: object, revision: str, err: str) -> None:
+        """Show the QR image or the failure text, then drop the worker."""
+        thread = self._qr_thread
+        worker = self._qr_worker
+        self._qr_thread = None
+        self._qr_worker = None
+        if thread is not None:
+            thread.quit()
+            thread.wait(2000)
+            thread.deleteLater()
+        if worker is not None:
+            worker.deleteLater()
+        self._btn_qr.setEnabled(True)
+        if err or not isinstance(png, (bytes, bytearray)) or not png:
+            self._qr_label.setPixmap(QPixmap())
+            self._qr_label.setText(self._qr_failure_text(err))
+            self._login_hint.setText("")
             return
         pix = QPixmap()
-        pix.loadFromData(png)
-        self._qr_label.setPixmap(pix.scaled(280, 280, Qt.AspectRatioMode.KeepAspectRatio))
+        if not pix.loadFromData(bytes(png)):
+            self._qr_label.setText("二维码数据无法显示")
+            self._login_hint.setText("")
+            return
+        self._qr_label.setPixmap(
+            pix.scaled(280, 280, Qt.AspectRatioMode.KeepAspectRatio)
+        )
         self._login_hint.setText(f"revision={revision or '-'}")
+
+    def _qr_failure_text(self, err: str) -> str:
+        """Short label copy for a failed QR fetch."""
+        if "NOT_FOUND" in err or "没有可用的二维码" in err or "没有二维码" in err:
+            return "当前没有可用的二维码（微信不在扫码界面）"
+        line = err.strip().splitlines()[0] if err.strip() else "获取二维码失败"
+        if len(line) > 180:
+            return line[:179] + "…"
+        return line
 
     def _submit_login(self) -> None:
         """Call SubmitLogin on the WeJam driver."""
@@ -1127,12 +1667,18 @@ class AdminWindow(QMainWindow):
             return
         self._allow_live_names = live
         self._reload_allow_list(live=live)
+        self._reload_observe_list(live=live)
         self._allow_dirty = False
+        self._observe_dirty = False
         QMessageBox.information(
             self,
             "刷新会话列表",
-            f"已加载 {len(live)} 个会话。勾选后点「保存白名单」。",
+            f"已加载 {len(live)} 个会话。勾选后分别点「保存白名单」或「保存旁听名单」。",
         )
+
+    def on_refresh_observe_chats(self) -> None:
+        """Reuse the same live session pull as the reply allowlist."""
+        self.on_refresh_allow_chats()
 
     def on_save_allow(self) -> None:
         """Persist checked session names as the allow list."""
@@ -1141,6 +1687,16 @@ class AdminWindow(QMainWindow):
         self._allow_dirty = False
         self._reload_allow_list(live=self._allow_live_names)
         QMessageBox.information(self, "白名单", "已保存。runner 会在下一条消息重读。")
+
+    def on_save_observe(self) -> None:
+        """Persist checked session names as the observe (archive-only) list."""
+        names = self._checked_observe_names()
+        store.write_observe_chat_names(names)
+        self._observe_dirty = False
+        self._reload_observe_list(live=self._allow_live_names)
+        QMessageBox.information(
+            self, "旁听名单", "已保存。runner 会在下一条消息重读。"
+        )
 
     def _reload_allow_list(self, *, live: list[str] | None = None) -> None:
         """Rebuild checkbox rows from live names plus names already allowed."""
@@ -1190,6 +1746,54 @@ class AdminWindow(QMainWindow):
         self._allow_dirty = True
         self._update_allow_summary()
 
+    def _reload_observe_list(self, *, live: list[str] | None = None) -> None:
+        """Rebuild observe checkbox rows from live names plus saved observe names."""
+        observed = set(store.read_observe_chats())
+        names = merge_chat_names_for_picker(live or [], observed)
+        self._observe_loading = True
+        self._observe_list.clear()
+        for name in names:
+            item = QListWidgetItem(name)
+            item.setFlags(
+                item.flags()
+                | Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsEnabled
+            )
+            item.setCheckState(
+                Qt.CheckState.Checked if name in observed else Qt.CheckState.Unchecked
+            )
+            self._observe_list.addItem(item)
+        self._observe_loading = False
+        self._update_observe_summary()
+
+    def _checked_observe_names(self) -> list[str]:
+        """Return display names currently checked in the observe list."""
+        names: list[str] = []
+        for index in range(self._observe_list.count()):
+            item = self._observe_list.item(index)
+            if item is None:
+                continue
+            if item.checkState() == Qt.CheckState.Checked:
+                text = item.text().strip()
+                if text:
+                    names.append(text)
+        return names
+
+    def _update_observe_summary(self) -> None:
+        """Show which observe names will be written on save."""
+        checked = self._checked_observe_names()
+        if not checked:
+            self._observe_summary.setText("当前勾选：无（保存后不旁听任何会话）")
+            return
+        self._observe_summary.setText("当前勾选：" + "、".join(checked))
+
+    def _mark_observe_dirty(self, _item: QListWidgetItem | None = None) -> None:
+        """Mark the observe list dirty when the user toggles a checkbox."""
+        if self._observe_loading:
+            return
+        self._observe_dirty = True
+        self._update_observe_summary()
+
     def load_api_settings(self) -> None:
         """Fill API form from .env (secrets masked)."""
         view = env_settings.read_api_settings()
@@ -1201,6 +1805,13 @@ class AdminWindow(QMainWindow):
         self._api_llm_key.setText("")
         mask = view.secret_masks.get("LLM_API_KEY", "")
         self._api_key_hint.setText(f"已保存：{mask}" if mask else "未设置")
+        self._api_archive_base.setText(view.values.get("ARCHIVE_LLM_BASE_URL", ""))
+        self._api_archive_model.setText(view.values.get("ARCHIVE_LLM_MODEL", ""))
+        self._api_archive_key.setText("")
+        archive_mask = view.secret_masks.get("ARCHIVE_LLM_API_KEY", "")
+        self._api_archive_key_hint.setText(
+            f"已保存：{archive_mask}" if archive_mask else "未设置（将沿用 LLM_API_KEY）"
+        )
 
     def on_save_api_settings(self) -> None:
         """Write API form values into .env."""
@@ -1211,6 +1822,9 @@ class AdminWindow(QMainWindow):
             "LLM_API_KEY": self._api_llm_key.text(),
             "LLM_MODEL": self._api_llm_model.text(),
             "LLM_TIMEOUT_SECONDS": self._api_timeout.text(),
+            "ARCHIVE_LLM_BASE_URL": self._api_archive_base.text(),
+            "ARCHIVE_LLM_API_KEY": self._api_archive_key.text(),
+            "ARCHIVE_LLM_MODEL": self._api_archive_model.text(),
         }
         env_settings.save_api_settings(updates)
         self.load_api_settings()
@@ -1367,6 +1981,7 @@ class AdminWindow(QMainWindow):
         """Refresh impression records from disk."""
         self._records = store.list_impressions()
         self.render_impressions()
+        self._refresh_merge_combos()
 
     def render_impressions(self) -> None:
         """Fill the impression list, applying the search box."""
@@ -1375,12 +1990,48 @@ class AdminWindow(QMainWindow):
         for row in self._records:
             key = str(row.get("user_key") or "")
             name = str(row.get("username") or "")
-            hay = f"{name} {key}".casefold()
+            aliases = " ".join(str(x) for x in (row.get("alias_labels") or []))
+            hay = f"{name} {key} {aliases}".casefold()
             if needle and needle not in hay:
                 continue
-            item = QListWidgetItem(name or key)
+            short = key[:8] if len(key) > 8 else key
+            label = name or aliases or short
+            if aliases and name and aliases != name:
+                label = f"{name}（{aliases}）"
+            elif aliases and not name:
+                label = aliases
+            item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, key)
             self._imp_list.addItem(item)
+
+    def _refresh_merge_combos(self) -> None:
+        """Reload merge source/target dropdowns from current impression rows."""
+        current_from = self._imp_merge_from.currentData()
+        current_into = self._imp_merge_into.currentData()
+        self._imp_merge_from.blockSignals(True)
+        self._imp_merge_into.blockSignals(True)
+        self._imp_merge_from.clear()
+        self._imp_merge_into.clear()
+        for row in self._records:
+            key = str(row.get("user_key") or "").strip()
+            if not key:
+                continue
+            name = str(row.get("username") or "").strip()
+            aliases = ", ".join(str(x) for x in (row.get("alias_labels") or []))
+            short = key[:8]
+            label = f"{name or aliases or short} [{short}]"
+            self._imp_merge_from.addItem(label, key)
+            self._imp_merge_into.addItem(label, key)
+        if current_from is not None:
+            idx = self._imp_merge_from.findData(current_from)
+            if idx >= 0:
+                self._imp_merge_from.setCurrentIndex(idx)
+        if current_into is not None:
+            idx = self._imp_merge_into.findData(current_into)
+            if idx >= 0:
+                self._imp_merge_into.setCurrentIndex(idx)
+        self._imp_merge_from.blockSignals(False)
+        self._imp_merge_into.blockSignals(False)
 
     def on_impression_selected(self, current: QListWidgetItem | None) -> None:
         """Load one impression into the form."""
@@ -1394,29 +2045,61 @@ class AdminWindow(QMainWindow):
         self._imp_key_edit.setText(str(record.get("user_key") or ""))
         self._imp_key_edit.setReadOnly(True)
         self._imp_name_edit.setText(str(record.get("username") or ""))
+        labels = record.get("alias_labels") or []
+        self._imp_aliases.setText("、".join(str(x) for x in labels) if labels else "（无别名）")
         self._imp_body.setPlainText(str(record.get("impression") or ""))
         self._imp_loading = False
         self._imp_dirty = False
 
     def on_new_impression(self) -> None:
-        """Clear the form for a new session key."""
+        """Clear the form for a new person_id / legacy key."""
         self._imp_editing_new = True
         self._imp_key = ""
         self._imp_key_edit.setReadOnly(False)
         self._imp_key_edit.clear()
         self._imp_name_edit.clear()
+        self._imp_aliases.setText("（新建后可由旁听自动登记别名）")
         self._imp_body.clear()
 
     def on_save_impression(self) -> None:
         """Write the impression form to disk."""
         key = self._imp_key_edit.text().strip() or self._imp_key
         if not key:
-            QMessageBox.warning(self, "缺少会话键", "请填写会话键，例如 文件传输助手 或 群名:昵称")
+            QMessageBox.warning(
+                self,
+                "缺少 person_id",
+                "请填写 person_id（UUID），或等旁听自动建档后再编辑。",
+            )
             return
         store.save_impression(key, self._imp_name_edit.text(), self._imp_body.toPlainText())
         self._imp_key_edit.setReadOnly(True)
         self._imp_dirty = False
         self.load_impressions()
+
+    def on_merge_impressions(self) -> None:
+        """Merge source person into target after confirmation."""
+        source = str(self._imp_merge_from.currentData() or "").strip()
+        target = str(self._imp_merge_into.currentData() or "").strip()
+        if not source or not target:
+            QMessageBox.warning(self, "合并印象", "请选择源档案与目标档案。")
+            return
+        if source == target:
+            QMessageBox.warning(self, "合并印象", "源与目标不能相同。")
+            return
+        reply = QMessageBox.question(
+            self,
+            "确认合并",
+            "将把源档案的印象与昵称别名并入目标，并删除源档案。此操作不可自动撤销，继续？",
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            store.merge_impressions(source, target)
+        except ValueError as exc:
+            QMessageBox.warning(self, "合并失败", str(exc))
+            return
+        self.load_impressions()
+        QMessageBox.information(self, "合并印象", "已合并。之后旧昵称入站会写到目标档案。")
 
     def on_import_impressions(self) -> None:
         """Import one or more impression JSON files."""
@@ -1431,6 +2114,94 @@ class AdminWindow(QMainWindow):
         QMessageBox.information(
             self, "导入印象", f"导入 {imported}，跳过 {skipped}。\n{extra}"
         )
+
+    def load_transcripts(self) -> None:
+        """Refresh chat list from the local inbound_transcript SQLite ring."""
+        db = store.transcript_db_path()
+        self._transcript_path_label.setText(f"存放位置：{db}（表 inbound_transcript）")
+        self._transcript_rows = store.list_transcript_chats()
+        self.render_transcript_chats()
+
+    def render_transcript_chats(self) -> None:
+        """Fill the transcript chat list, applying the search box."""
+        needle = self._transcript_search.text().strip().casefold()
+        current = ""
+        item = self._transcript_list.currentItem()
+        if item is not None:
+            current = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        self._transcript_list.clear()
+        shown = 0
+        restore: QListWidgetItem | None = None
+        for row in self._transcript_rows:
+            chat = str(row.get("chat") or "")
+            if not chat:
+                continue
+            if needle and needle not in chat.casefold():
+                continue
+            count = int(row.get("count") or 0)
+            latest = float(row.get("latest_at") or 0.0)
+            stamp = (
+                datetime.fromtimestamp(latest).strftime("%m-%d %H:%M")
+                if latest > 0
+                else "—"
+            )
+            entry = QListWidgetItem(f"{chat}  ({count} · {stamp})")
+            entry.setData(Qt.ItemDataRole.UserRole, chat)
+            self._transcript_list.addItem(entry)
+            shown += 1
+            if chat == current:
+                restore = entry
+        total = len(self._transcript_rows)
+        self._transcript_summary.setText(f"显示 {shown} / 共 {total} 个会话")
+        if restore is not None:
+            self._transcript_list.setCurrentItem(restore)
+        elif shown == 0:
+            self._transcript_body.setPlainText(
+                "暂无记录。开着 bot 并命中旁听/白名单后，消息会出现在这里。"
+                if total == 0
+                else "没有匹配的会话名。"
+            )
+
+    def on_transcript_selected(self, current: QListWidgetItem | None) -> None:
+        """Show bubbles for the selected chat title."""
+        if current is None:
+            return
+        chat = str(current.data(Qt.ItemDataRole.UserRole) or "").strip()
+        if not chat:
+            return
+        self._show_transcript_chat(chat)
+
+    def _reload_selected_transcript(self) -> None:
+        """Re-read the open chat when the per-chat limit spinner changes."""
+        item = self._transcript_list.currentItem()
+        if item is None:
+            return
+        chat = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
+        if chat:
+            self._show_transcript_chat(chat)
+
+    def _show_transcript_chat(self, chat: str) -> None:
+        """Render one chat's transcript ring into the read-only pane."""
+        limit = int(self._transcript_limit.value())
+        rows = store.load_transcript_messages(chat, limit)
+        if not rows:
+            self._transcript_body.setPlainText(f"「{chat}」暂无本地记录。")
+            return
+        lines: list[str] = [f"# {chat}（最近 {len(rows)} 条）", ""]
+        for row in rows:
+            stamp = datetime.fromtimestamp(row.created_at).strftime("%Y-%m-%d %H:%M:%S")
+            if row.from_self:
+                who = "我"
+            else:
+                who = row.sender or "对方"
+            src = row.source or ""
+            head = f"[{stamp}] {who}"
+            if src:
+                head = f"{head} · {src}"
+            lines.append(head)
+            lines.append(row.text)
+            lines.append("")
+        self._transcript_body.setPlainText("\n".join(lines).rstrip() + "\n")
 
     def _mark_culture_dirty(self) -> None:
         """Remember unsaved group-culture edits."""
@@ -1504,6 +2275,120 @@ class AdminWindow(QMainWindow):
         self._culture_dirty = False
         self.load_group_cultures()
 
+    def load_prompt_evolution(self) -> None:
+        """Reload pending proposals, active overlays, and policy switches."""
+        auto, interval = store.prompt_evolution_settings()
+        self._evo_auto.setChecked(auto)
+        self._evo_interval.setValue(int(interval))
+        self._evo_pending_rows = store.list_prompt_evolution_pending()
+        self._evo_active_rows = store.list_prompt_evolution_active()
+        self._evo_pending_list.clear()
+        for row in self._evo_pending_rows:
+            chat = str(row.get("chat") or "?")
+            created = str(row.get("created_at") or "")
+            rationale = str(row.get("rationale") or "").strip()
+            title = f"{chat} · {created}"
+            if rationale:
+                title = f"{title} — {rationale[:40]}"
+            item = QListWidgetItem(title)
+            item.setData(Qt.ItemDataRole.UserRole, str(row.get("id") or ""))
+            self._evo_pending_list.addItem(item)
+        self._evo_active_list.clear()
+        for row in self._evo_active_rows:
+            label = store.prompt_evolution_display_label(row)
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, str(row.get("chat") or ""))
+            self._evo_active_list.addItem(item)
+        self._evo_pending_id = ""
+        self._evo_active_chat = ""
+        self._evo_meta.setText("选择左侧待审，或下方已生效项")
+        self._evo_rationale.clear()
+        self._evo_body.clear()
+
+    def on_prompt_evolution_pending_selected(
+        self, current: QListWidgetItem | None, _previous: QListWidgetItem | None
+    ) -> None:
+        """Show the selected pending proposal in the detail pane."""
+        if current is None:
+            return
+        proposal_id = str(current.data(Qt.ItemDataRole.UserRole) or "")
+        row = store.load_prompt_evolution_pending(proposal_id)
+        if row is None:
+            return
+        self._evo_pending_id = proposal_id
+        self._evo_active_chat = ""
+        self._evo_active_list.clearSelection()
+        self._evo_meta.setText(
+            f"待审 · {row.get('chat') or '?'} · {row.get('created_at') or ''}"
+        )
+        self._evo_rationale.setPlainText(str(row.get("rationale") or ""))
+        body = str(row.get("proposed") or "")
+        source = str(row.get("source_turn") or "").strip()
+        if source:
+            body = f"{body}\n\n——\n本轮摘要：\n{source}"
+        self._evo_body.setPlainText(body)
+
+    def on_prompt_evolution_active_selected(
+        self, current: QListWidgetItem | None, _previous: QListWidgetItem | None
+    ) -> None:
+        """Show an approved overlay in the detail pane."""
+        if current is None:
+            return
+        chat = str(current.data(Qt.ItemDataRole.UserRole) or "")
+        row = next(
+            (r for r in self._evo_active_rows if str(r.get("chat") or "") == chat),
+            None,
+        )
+        if row is None:
+            return
+        self._evo_active_chat = chat
+        self._evo_pending_id = ""
+        self._evo_pending_list.clearSelection()
+        self._evo_meta.setText(
+            f"已生效 · {chat} · {row.get('updated_at') or ''} · from {row.get('from_proposal_id') or '?'}"
+        )
+        self._evo_rationale.clear()
+        self._evo_body.setPlainText(str(row.get("prompt") or ""))
+
+    def on_save_prompt_evolution_policy(self) -> None:
+        """Persist auto-proposal switch and interval into reply_policy.toml."""
+        store.set_prompt_evolution_auto(self._evo_auto.isChecked())
+        store.set_prompt_evolution_min_messages(int(self._evo_interval.value()))
+        QMessageBox.information(
+            self, "已保存", "进化开关已写入 reply_policy.toml，下一条消息生效。"
+        )
+
+    def on_approve_prompt_evolution(self) -> None:
+        """Approve the selected pending proposal into an active overlay."""
+        proposal_id = self._evo_pending_id
+        if not proposal_id:
+            QMessageBox.information(self, "未选择", "请先选中一条待审提案。")
+            return
+        active = store.approve_prompt_evolution(proposal_id)
+        if active is None:
+            QMessageBox.warning(self, "失败", "批准失败：提案可能已被处理。")
+            self.load_prompt_evolution()
+            return
+        self.load_prompt_evolution()
+
+    def on_reject_prompt_evolution(self) -> None:
+        """Delete the selected pending proposal without applying it."""
+        proposal_id = self._evo_pending_id
+        if not proposal_id:
+            QMessageBox.information(self, "未选择", "请先选中一条待审提案。")
+            return
+        store.reject_prompt_evolution(proposal_id)
+        self.load_prompt_evolution()
+
+    def on_disable_prompt_evolution(self) -> None:
+        """Remove the selected approved overlay for a group."""
+        chat = self._evo_active_chat
+        if not chat:
+            QMessageBox.information(self, "未选择", "请先在「已生效」列表中选中一项。")
+            return
+        store.disable_prompt_evolution(chat)
+        self.load_prompt_evolution()
+
     def _save_visible(self) -> None:
         """⌘S / Ctrl+S saves the editor that currently has unsaved work."""
         if self._persona_dirty:
@@ -1516,9 +2401,11 @@ class AdminWindow(QMainWindow):
             self.on_save_group_culture()
         if self._allow_dirty:
             self.on_save_allow()
+        if self._observe_dirty:
+            self.on_save_observe()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Prompt for unsaved whitelist, then stop UI polling (runner stays up)."""
+        """Prompt for unsaved allow/observe lists, then stop UI polling."""
         if self._allow_dirty:
             answer = QMessageBox.question(
                 self,
@@ -1536,6 +2423,23 @@ class AdminWindow(QMainWindow):
                 names = self._checked_allow_names()
                 store.write_allow_chat_names(names)
                 self._allow_dirty = False
+        if self._observe_dirty:
+            answer = QMessageBox.question(
+                self,
+                "未保存的旁听名单",
+                "旁听名单有未保存的勾选变更，是否保存？",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save,
+            )
+            if answer == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            if answer == QMessageBox.StandardButton.Save:
+                names = self._checked_observe_names()
+                store.write_observe_chat_names(names)
+                self._observe_dirty = False
         self._poll.stop()
         app = QApplication.instance()
         if app is not None:

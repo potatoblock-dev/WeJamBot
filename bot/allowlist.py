@@ -25,3 +25,25 @@ def save_allow_chats(path: Path, names: list[str] | set[str]) -> Path:
     body = "\n".join(unique)
     path.write_text((body + "\n") if body else "", encoding="utf-8")
     return path
+
+
+def merge_chat_names_for_picker(live: list[str], allowed: set[str] | list[str]) -> list[str]:
+    """Build the checkbox list: live sessions first, then allowed names not in live.
+
+    Names already on the whitelist stay visible (and checked) even when the
+    session list briefly omits them, so a refresh cannot drop allow entries.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in live:
+        name = str(raw).strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    for raw in sorted({str(n).strip() for n in allowed if str(n).strip()}):
+        if raw in seen:
+            continue
+        seen.add(raw)
+        out.append(raw)
+    return out

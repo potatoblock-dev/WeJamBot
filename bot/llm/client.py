@@ -1,11 +1,14 @@
-"""OpenAI-compatible chat completions client (text only for WeJam v1)."""
+"""OpenAI-compatible chat completions client (text + optional images)."""
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+import mimetypes
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -15,6 +18,10 @@ from bot.personas.catalog import PersonaCatalog
 from bot.prompt_book import PromptBook
 
 _log = logging.getLogger(__name__)
+
+# Fixed system notice when the API key is missing or the chat call fails — never echo user text.
+# Leading "# [系统]" marks non-persona output so operators can tell faults from roleplay.
+LLM_UNAVAILABLE_REPLY = "# [系统] 语言模型当前不可用，本次未能生成回复。"
 
 
 class LLMClient:
@@ -85,6 +92,23 @@ class LLMClient:
         finally:
             self._slot.release()
 
+    def _user_content(
+        self, text_body: str, image_paths: list[str] | tuple[str, ...] = ()
+    ) -> str | list[dict[str, Any]]:
+        """Build user message content; images go only on the user turn as data URLs."""
+        paths = [p for p in image_paths if p]
+        if not paths:
+            return text_body
+        parts: list[dict[str, Any]] = [{"type": "text", "text": text_body}]
+        for path in paths:
+            data_url = _image_data_url(path)
+            if not data_url:
+                continue
+            parts.append(
+                {"type": "image_url", "image_url": {"url": data_url, "detail": "low"}}
+            )
+        return parts if len(parts) > 1 else text_body
+
     async def complete(
         self,
         history: list[dict[str, str]],
@@ -92,21 +116,33 @@ class LLMClient:
         impression: str = "",
         directory: str = "",
         others: str = "",
+        group_culture: str = "",
+        knowledge: str = "",
+        prompt_evolution: str = "",
+        image_paths: list[str] | tuple[str, ...] = (),
     ) -> str:
-        """Generate a text reply for one chat turn."""
+        """Generate a text reply for one chat turn; optional local images for vision."""
         text_body = user_text.strip()
         if not self.is_configured():
-            return text_body or "收到。"
-        if not text_body:
+            _log.warning("llm complete skipped: LLM_API_KEY not configured")
+            return LLM_UNAVAILABLE_REPLY
+        if not text_body and not image_paths:
             return "嗯。"
+        if not text_body:
+            text_body = "（用户发了一张图/表情）"
         system = self._prompts.system_text(
             impression,
             directory=directory,
             others=others,
+            group_culture=group_culture,
+            knowledge=knowledge,
+            prompt_evolution=prompt_evolution,
         )
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
         messages.extend(history)
-        messages.append({"role": "user", "content": text_body})
+        messages.append(
+            {"role": "user", "content": self._user_content(text_body, image_paths)}
+        )
         url = f"{self._settings.llm_base_url}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self._settings.llm_api_key}",
@@ -121,16 +157,17 @@ class LLMClient:
         }
         try:
             _log.info(
-                "llm request start model=%s messages=%s",
+                "llm request start model=%s messages=%s images=%s",
                 self._settings.llm_model,
                 len(messages),
+                len(tuple(image_paths or ())),
             )
             data = await self._call_api(url, headers, payload, label="chat")
             text = str(data["choices"][0]["message"]["content"]).strip()
             return text or "嗯。"
         except Exception:
             _log.exception("llm complete failed")
-            return "这会儿没接上模型，稍后再试。"
+            return LLM_UNAVAILABLE_REPLY
 
     async def complete_plain(self, system: str, user_text: str, max_tokens: int = 400) -> str:
         """One-shot completion without chat history (used to rewrite impressions)."""
@@ -153,3 +190,21 @@ class LLMClient:
         }
         data = await self._call_api(url, headers, payload, label="impression")
         return str(data["choices"][0]["message"]["content"]).strip()
+
+
+def _image_data_url(path: str) -> str:
+    """Encode a local image file as a data URL for DeepSeek vision."""
+    file_path = Path(path)
+    if not file_path.is_file():
+        _log.warning("llm image missing path=%s", path)
+        return ""
+    mime, _ = mimetypes.guess_type(file_path.name)
+    if not mime or not mime.startswith("image/"):
+        mime = "image/png"
+    try:
+        raw = file_path.read_bytes()
+    except OSError:
+        _log.exception("llm image read failed path=%s", path)
+        return ""
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{encoded}"

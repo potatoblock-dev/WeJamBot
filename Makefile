@@ -9,7 +9,7 @@ NAME ?= wejam-session
 IMAGE ?= wejam/wechat:latest
 
 .DEFAULT_GOAL := help
-.PHONY: help proto proto-check build up down logs shell status test test-docs test-concurrency test-bot clean
+.PHONY: help proto proto-check build up down logs shell status test test-live test-docs test-concurrency test-bot clean
 
 help:  ## 显示所有可用任务
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -26,10 +26,13 @@ proto-check:  ## 校验生成的 stub 是否与 proto 同步
 build:  ## 构建微信镜像
 	docker build -f docker/Dockerfile -t $(IMAGE) .
 
-up:  ## 启动会话容器
+up:  ## 启动或恢复会话容器（已有则 docker start，不删登录态）
 	bash docker/run.sh
 
-down:  ## 停止并删除容器（不动状态卷）
+down:  ## 停止容器（保留容器与状态卷，下次 up 可复用登录）
+	docker stop $(NAME) || true
+
+destroy:  ## 删除容器（不动状态卷；下次 up 会新建，微信可能要重登）
 	docker rm -f $(NAME)
 
 logs:  ## 跟随容器日志
@@ -43,9 +46,11 @@ status:  ## 查看服务与微信状态
 
 # ---------- 测试 ----------
 test-bot:  ## 宿主闲聊 bot 单测（不需要已登录微信）
-	$(PYTHON) -m pytest tests/test_bot_*.py -q
+	$(PYTHON) -m pytest tests/test_bot_*.py tests/test_agent_*.py -q
 
-test: test-docs test-concurrency  ## 跑全部活体检查
+test: test-bot  ## 默认离线单测（CI / 日常）
+
+test-live: test-docs test-concurrency  ## 活体检查（需要已登录微信容器）
 
 test-docs:  ## 检查文档里的示例是否真能跑
 	$(PYTHON) tests/check_docs_examples.py

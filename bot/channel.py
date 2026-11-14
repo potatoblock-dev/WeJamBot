@@ -1,8 +1,10 @@
-"""Map wejam WatchMessages events onto channel-agnostic IncomingTurn values."""
+"""Map hands/eyes messages onto channel-agnostic IncomingTurn values."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from bot.eyes import MediaAttachment, SeenMessage
 
 
 @dataclass(frozen=True)
@@ -17,14 +19,17 @@ class IncomingTurn:
     chat_type: str = ""
     msg_id: str = ""
     unread: int = 0
+    content_type: str = "text"
+    index: int = 0
+    image_paths: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def is_group(self) -> bool:
-        """True for group chats; friend/official/service are private."""
+        """True for group chats; friend/single/official/service are private."""
         kind = (self.chat_type or "").strip().lower()
-        if kind == "group":
+        if kind in {"group", "chatroom"}:
             return True
-        if kind in {"friend", "official", "service"}:
+        if kind in {"friend", "single", "private", "c2c", "official", "service"}:
             return False
         return bool(self.sender.strip())
 
@@ -39,7 +44,11 @@ class IncomingTurn:
 
     @property
     def impression_key(self) -> str:
-        """Impression file key: same as session_id (no stable WeChat user id)."""
+        """Legacy display-name key (``群名:昵称``); ChatBot maps this via IdentityDirectory.
+
+        GUI has no wxid. Runtime storage uses host ``person_id``; renames need a
+        manual merge in the admin console so aliases point at one person.
+        """
         return self.session_id
 
     @property
@@ -63,41 +72,69 @@ class IncomingTurn:
         return False
 
 
-def turns_from_event(event: object) -> list[IncomingTurn]:
-    """Convert a wejam MessageEvent (or test double) into IncomingTurn rows."""
-    chat = str(getattr(event, "chat", "") or "").strip()
-    unread = int(getattr(event, "unread", 0) or 0)
-    added = list(getattr(event, "added", ()) or ())
-    turns: list[IncomingTurn] = []
-    for message in added:
-        kind = int(getattr(message, "kind", 1) or 1)
-        if kind not in (0, 1):
-            continue
-        text = str(getattr(message, "text", "") or "").strip()
-        if not text:
-            continue
-        msg_chat = str(getattr(message, "chat", "") or "").strip() or chat
-        turns.append(
-            IncomingTurn(
-                chat=msg_chat,
-                sender=str(getattr(message, "sender", "") or "").strip(),
-                text=text,
-                preview_only=bool(getattr(message, "preview_only", False)),
-                from_self=bool(getattr(message, "from_self", False)),
-                chat_type=str(getattr(message, "chat_type", "") or ""),
-                msg_id=str(getattr(message, "id", "") or ""),
-                unread=unread,
-            )
-        )
-    return turns
+def incoming_turn(message: SeenMessage) -> IncomingTurn:
+    """Copy one plain SeenMessage into the brain's turn. No driver fields."""
+    from bot.sender_name import is_plausible_sender_name, split_preview_sender
+
+    paths = tuple(
+        item.path
+        for item in (message.attachments or ())
+        if isinstance(item, MediaAttachment) and item.path
+    )
+    sender = message.sender.strip()
+    text = message.text.strip()
+    # Defense in depth: drop bridge-side false senders like ``[链接]…``.
+    if sender and not is_plausible_sender_name(sender):
+        sender = ""
+    # If the bridge left sender empty, try splitting ``昵称: 正文`` from the body.
+    if not sender and text:
+        parsed_sender, parsed_text = split_preview_sender(text)
+        if parsed_sender:
+            sender, text = parsed_sender, parsed_text
+    return IncomingTurn(
+        chat=message.chat.strip(),
+        sender=sender,
+        text=text,
+        preview_only=message.preview,
+        from_self=message.from_self,
+        chat_type=message.chat_type,
+        msg_id=message.message_id,
+        unread=message.unread,
+        content_type=(message.content_type or "text").strip() or "text",
+        index=int(message.index or 0),
+        image_paths=paths,
+    )
 
 
 def should_handle(turn: IncomingTurn, allowed: set[str]) -> bool:
     """True when the runner should pass this turn to the chat brain."""
     if turn.from_self:
         return False
-    if not turn.text.strip():
+    content_type = (turn.content_type or "text").strip().lower() or "text"
+    has_body = bool(turn.text.strip()) or bool(turn.image_paths) or content_type != "text"
+    if not has_body:
         return False
     if not allowed:
         return False
     return turn.chat in allowed
+
+
+def should_observe(
+    turn: IncomingTurn, observe: set[str], allowed: set[str]
+) -> bool:
+    """True when the runner should archive-only (not reply) for this turn.
+
+    Chats also on the reply allowlist are never observed here — reply path wins.
+    """
+    if turn.from_self:
+        return False
+    content_type = (turn.content_type or "text").strip().lower() or "text"
+    has_body = bool(turn.text.strip()) or bool(turn.image_paths) or content_type != "text"
+    if not has_body:
+        return False
+    chat = turn.chat.strip()
+    if not chat or not observe or chat not in observe:
+        return False
+    if chat in allowed:
+        return False
+    return True

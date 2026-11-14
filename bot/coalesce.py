@@ -24,15 +24,25 @@ def merge_turns(turns: list[IncomingTurn]) -> IncomingTurn:
         return turns[0]
     last = turns[-1]
     texts: list[str] = []
+    paths: list[str] = []
+    content_type = last.content_type
     for item in turns:
         text = item.text.strip()
         if text and (not texts or texts[-1] != text):
             texts.append(text)
+        for path in item.image_paths:
+            if path and path not in paths:
+                paths.append(path)
+        kind = (item.content_type or "text").strip().lower() or "text"
+        if kind != "text":
+            content_type = kind
     return replace(
         last,
         text="\n".join(texts),
         preview_only=any(item.preview_only for item in turns),
         unread=max(item.unread for item in turns),
+        image_paths=tuple(paths) if paths else last.image_paths,
+        content_type=content_type or last.content_type,
     )
 
 
@@ -111,9 +121,13 @@ class TurnCoalescer:
         if not batch:
             return
         merged = merge_turns(batch)
+        nick = merged.sender.strip() or (
+            "(未知)" if merged.is_group else merged.chat.strip()
+        )
         _log.info(
-            "coalesce flush session=%s lines=%s preview=%r",
-            merged.session_id,
+            "coalesce flush chat=%s nick=%s lines=%s preview=%r",
+            merged.chat,
+            nick,
             len(batch),
             merged.user_text[:120],
         )

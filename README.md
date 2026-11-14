@@ -2,26 +2,25 @@
 
 微信侧产品仓：**0x01 文本闲聊脑 + WeJam 眼睛/手**。上游驱动仍见 [Potatoblock-Dev/WeJamBot](https://github.com/Potatoblock-Dev/WeJamBot)；QQ 官方机器人脑仍是 [baitang-bt/0x01](https://github.com/baitang-bt/0x01)。本仓推送到 [Potatoblock-Dev/WeJambBot_0x02](https://github.com/Potatoblock-Dev/WeJambBot_0x02)。
 
-闲聊脑跑在宿主。消息桥经 **gRPC `wejam.v1`**，**主路径 = Callus-Bridge GUI**（`:7701`，真个人号，可进个人微信群）。
-可选旁路：openclaw 非 GUI（`:7702`，仅私聊，不能进个人群）；遗留 WeJam `:7700`。
+闲聊脑跑在宿主。消息桥经 **gRPC `wejam.v1`**，**日常唯一路径 = Callus-Bridge GUI**（`:7701`，真个人号，可进个人微信群）。
+openclaw（`:7702`）与遗留 WeJam（`:7700`）仅归档，不作运行默认。
 
 ```bash
-# 推荐：另仓起桥后
-# cd ../Callus-Bridge && make openclaw
+# 另仓起 Callus GUI 桥后：
 WEJAM_TARGET=127.0.0.1:7701 python -m bot
 ```
 
 **GUI 路径**：不使用 OCR，不使用输入法，不依赖静态坐标。
 
 ```
-┌─ 容器 wejam-session ──────────────────────────┐
+┌─ 容器 callus-session（Callus GUI） ────────────┐
 │  Xvfb ── 微信 ── AT-SPI                        │
 │              └── agent（gRPC 服务）            │
 │                  登录状态机 + 会话/消息解析     │
 └──────────────────┬─────────────────────────────┘
-                   │ gRPC  127.0.0.1:7700
+                   │ gRPC  127.0.0.1:7701
 ┌──────────────────▼─────────────────────────────┐
-│  宿主：wejam 客户端库 / wejam CLI            │
+│  宿主：wejam 客户端库 / wejam CLI / bot 脑     │
 └────────────────────────────────────────────────┘
 ```
 
@@ -378,12 +377,12 @@ python tests/check_concurrency.py
 | 手眼 | `bot/eyes.py` 的 `WeChatEyes`；现实现是 `bot/hands.py` 的 `WeJamHands` | 列会话、订阅新消息、发文本、登录状态、拉二维码。返回普通数据。驱动事件停在 `WeJamHands` 里 |
 | 脑 | `bot/chat.py`、人设、印象、策略、连发合并、LLM | 只通过 `WeChatEyes` 读写微信，不 import protobuf，不依赖 wejam 事件类型 |
 
-换一套手眼实现时，大脑代码保持不动。**不改** `agent/` 与 proto。容器可用控制台「运行」页一键启停，或 `bash docker/run.sh`；宿主只连 `127.0.0.1:7700`。
+换一套手眼实现时，大脑代码保持不动。**不改** 本仓 `agent/` 与 proto（日常桥在 Callus-Bridge）。容器可用控制台「运行」页启停；宿主连 `127.0.0.1:7701`。
 
 ```
-微信容器 :7700  →  WeJamHands（实现 WeChatEyes）  →  连发合并  →  ChatBot  →  LLM
-                                                      ↑
-                                               bot.admin 控制台
+Callus GUI :7701  →  WeJamHands（实现 WeChatEyes）  →  连发合并  →  ChatBot  →  LLM
+                                                          ↑
+                                                   bot.admin 控制台
 ```
 
 ```bash

@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.normpath(os.path.join(_HERE, "..")))
 
 from wejam.v1 import wejam_pb2, wejam_pb2_grpc  # noqa: E402
 
-from . import accessibility, badges, chat, geometry, login, message_actions, selflog, wechat_info  # noqa: E402
+from . import accessibility, badges, chat, geometry, login, message_actions, selflog, session_account, wechat_info  # noqa: E402
 from . import input as inputmod  # noqa: E402
 
 PORT = int(os.environ.get("WEJAM_PORT", "7700"))
@@ -77,21 +77,73 @@ class WeJamServicer(wejam_pb2_grpc.WeJamServicer):
             self.machine.unsubscribe(q)
 
     def GetLoginQRCode(self, request, context):
-        qr = self.machine.qr()
-        if not qr["payload"]:
+        """Return the QR on screen now. The poller cache can lag behind WeChat."""
+        qr = self.machine.read_screen_qr()
+        if qr is None:
+            self._open_qr_screen()
+            qr = self.machine.read_screen_qr()
+        if qr is None:
+            qr = self.machine.qr()
+        if not qr or not qr.get("payload"):
             context.abort(grpc.StatusCode.NOT_FOUND,
-                          "当前没有可用的二维码（可能不在二维码状态）")
+                          "屏幕上没有解出二维码（微信可能不在扫码界面）")
         return wejam_pb2.LoginQRCode(
             payload=qr["payload"],
             revision=qr["revision"] or "",
             fetched_unix_ms=qr["fetched_unix_ms"],
         )
 
+    def _open_qr_screen(self) -> None:
+        """Leave the remembered-account screen so WeChat paints a QR.
+
+        「刷新二维码」 used to return a cached image while this screen had no
+        code. 「切换账号」 is the control WeChat uses to show a new QR.
+        """
+        if self.machine.snapshot()["phase"] == login.PHASE_LOGGED_IN:
+            return
+        from .ui import UI_LOCK
+        ack = geometry.node_physical_rect("push button", "我知道了")
+        if ack:
+            x, y, w, h = ack
+            with UI_LOCK:
+                inputmod.click_at(x + w // 2, y + h // 2)
+            time.sleep(0.4)
+        switch = geometry.node_physical_rect("push button", "切换账号")
+        if switch is None:
+            return
+        x, y, w, h = switch
+        with UI_LOCK:
+            inputmod.click_at(x + w // 2, y + h // 2)
+        time.sleep(1.2)
+
     def SubmitLogin(self, request, context):
         ok, detail = self.machine.submit_login()
         if not ok:
             context.abort(grpc.StatusCode.FAILED_PRECONDITION, detail)
         return self._state_msg()
+
+    def Logout(self, request, context):
+        snap = self.machine.snapshot()
+        if snap["phase"] != login.PHASE_LOGGED_IN:
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, "当前未登录，无法退出")
+        ok, detail = session_account.logout()
+        if not ok:
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, detail)
+        # Give the login poller a moment to observe the post-logout UI.
+        time.sleep(1.0)
+        return self._state_msg()
+
+    def GetAccountSummary(self, request, context):
+        snap = self.machine.snapshot()
+        logged_in = snap["phase"] == login.PHASE_LOGGED_IN
+        raw = session_account.build_summary(
+            phase=PHASE_TO_PROTO.get(snap["phase"], wejam_pb2.LOGIN_PHASE_UNSPECIFIED),
+            detail=snap["detail"],
+            since_ms=snap["since_unix_ms"],
+            uptime_ms=self.machine.uptime_ms(),
+            logged_in=logged_in,
+        )
+        return wejam_pb2.AccountSummary(**raw)
 
     # ---------- 会话与消息 ----------
     def ListChats(self, request, context):
@@ -151,13 +203,10 @@ class WeJamServicer(wejam_pb2_grpc.WeJamServicer):
     @staticmethod
     def _preview_to_message(c):
         """把会话列表的一行预览变成一条 Message（preview_only）。"""
-        text = c["last_message"]
-        sender = ""
-        # 群聊预览形如 "崔欣宇 7.31: 正文"，尝试拆出发送者
-        if ": " in text:
-            head, rest = text.split(": ", 1)
-            if 0 < len(head) <= 24 and rest.strip():
-                sender, text = head.strip(), rest.strip()
+        from .sender_name import split_preview_sender
+
+        # 群聊预览形如 "崔欣宇: 正文" / "昵称：正文"；拆出发送者（拒绝 [链接] 等）
+        sender, text = split_preview_sender(c["last_message"])
         mid = hashlib.sha1(
             f"{c['name']}|{c['last_message']}|{c['last_time']}|{c['unread_count']}".encode()
         ).hexdigest()[:16]
@@ -274,6 +323,11 @@ class WeJamServicer(wejam_pb2_grpc.WeJamServicer):
         ])
 
     def InvokeNode(self, request, context):
+        if wechat_info.name_is_dangerous(request.name):
+            return wejam_pb2.InvokeNodeResponse(
+                ok=False,
+                detail=f"拒绝点击危险节点 {request.role}/{request.name}",
+            )
         rect = geometry.node_physical_rect(request.role, request.name)
         if rect is None:
             return wejam_pb2.InvokeNodeResponse(ok=False, detail="未找到匹配的可见节点")

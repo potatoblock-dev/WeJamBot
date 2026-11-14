@@ -13,9 +13,11 @@ PUBLIC_KEYS: tuple[str, ...] = (
     "LLM_BASE_URL",
     "LLM_MODEL",
     "LLM_TIMEOUT_SECONDS",
+    "ARCHIVE_LLM_BASE_URL",
+    "ARCHIVE_LLM_MODEL",
 )
 
-SECRET_KEYS: tuple[str, ...] = ("LLM_API_KEY",)
+SECRET_KEYS: tuple[str, ...] = ("LLM_API_KEY", "ARCHIVE_LLM_API_KEY")
 
 ALL_FORM_KEYS: tuple[str, ...] = (
     "WEJAM_TARGET",
@@ -24,10 +26,19 @@ ALL_FORM_KEYS: tuple[str, ...] = (
     "LLM_API_KEY",
     "LLM_MODEL",
     "LLM_TIMEOUT_SECONDS",
+    "ARCHIVE_LLM_BASE_URL",
+    "ARCHIVE_LLM_API_KEY",
+    "ARCHIVE_LLM_MODEL",
 )
 
 OPTIONAL_KEEP_IF_BLANK: frozenset[str] = frozenset(
-    {"LLM_TIMEOUT_SECONDS", "WEJAM_TARGET", "BOT_NAME"}
+    {
+        "LLM_TIMEOUT_SECONDS",
+        "WEJAM_TARGET",
+        "BOT_NAME",
+        "ARCHIVE_LLM_BASE_URL",
+        "ARCHIVE_LLM_MODEL",
+    }
 )
 
 _MODEL_ALIASES: dict[str, str] = {
@@ -125,7 +136,11 @@ def save_api_settings(
     path: Path | None = None,
     clear_secrets: frozenset[str] | None = None,
 ) -> Path:
-    """Update selected keys in .env while preserving comments and unrelated keys."""
+    """Update selected keys in .env while preserving comments and unrelated keys.
+
+    Also mirrors managed keys into os.environ so a long-lived admin process
+    does not spawn the runner with a stale LLM_API_KEY after the file changes.
+    """
     target = path or env_file_path()
     existing: dict[str, str] = {}
     original = ""
@@ -152,13 +167,25 @@ def save_api_settings(
         incoming = (updates.get(key) or "").strip()
         if not incoming and key in OPTIONAL_KEEP_IF_BLANK:
             continue
-        if key == "LLM_MODEL":
+        if key in {"LLM_MODEL", "ARCHIVE_LLM_MODEL"}:
             incoming = normalize_model_id(incoming)
         merged[key] = incoming
 
     new_text = render_env_update(original, merged, ALL_FORM_KEYS)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(new_text, encoding="utf-8")
+    # Keep the admin process environ in sync so the next start-bot child
+    # does not inherit a stale LLM_API_KEY from before this save.
+    import os
+
+    for key in ALL_FORM_KEYS:
+        if key not in merged:
+            continue
+        val = merged.get(key, "")
+        if val:
+            os.environ[key] = val
+        elif key in SECRET_KEYS:
+            os.environ.pop(key, None)
     return target
 
 

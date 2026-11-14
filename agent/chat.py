@@ -17,6 +17,7 @@ import time
 from . import geometry, input as inputmod
 from . import selflog
 from .ui import synchronized
+from .update_dialog import UPDATE_TITLE_RE, pick_update_close_rect
 
 TIME_RE = re.compile(r"^\s*(\d{1,2}:\d{2}|昨天|星期[一二三四五六日天]|\d{1,2}月\d{1,2}日|\d{4}年\d{1,2}月\d{1,2}日)\s*$")
 UNREAD_RE = re.compile(r"\[(\d+)条\]")
@@ -261,11 +262,14 @@ def list_messages(chat="", limit=0):
         else:
             kind = "TEXT"
             sender, text = "", raw.strip()
-            # 群聊里 item 常形如 "发送者\n正文"
+            # 群聊里 item 常形如 "发送者\n正文"（拒绝 [链接] 等伪昵称）
             if "\n" in raw:
+                from .sender_name import is_plausible_sender_name
+
                 first, rest = raw.split("\n", 1)
-                if 0 < len(first.strip()) <= 24 and rest.strip():
-                    sender, text = first.strip(), rest.strip()
+                cand = first.strip()
+                if is_plausible_sender_name(cand) and rest.strip():
+                    sender, text = cand, rest.strip()
         # ID 刻意不用序号：序号会随列表滚动而漂移，导致「全部变成新消息」。
         # 用 会话+时间桶+正文+桶内出现次数，窗口不变时保持稳定。
         key = (bucket, text)
@@ -309,6 +313,7 @@ def chat_header_info(chat):
 
 POPUP_MIN_AREA = 120 * 80      # 弹出层判据：与主窗口不同的可见窗口
 
+
 def _foreign_windows():
     """除主窗口外的可见 X11 窗口（菜单 / 对话框 / 设置面板等）。"""
     try:
@@ -322,24 +327,110 @@ def _foreign_windows():
             if w["id"] != main["id"] and w["w"] * w["h"] >= POPUP_MIN_AREA]
 
 
-def _popup_guard():
-    """确保界面处于「只有主窗口」的已知状态，否则返回错误说明。
+def _walk_named_rects():
+    """遍历桌面无障碍树，产出 (role, name, (x,y,w,h)|None)。"""
+    import pyatspi
 
-    为什么必须这样：点击坐标是按无障碍节点算的，但**弹层是独立窗口且盖在上面**，
-    X 会把点击投递给最顶层窗口 —— 于是「点会话列表」会打到弹层上的某个位置。
-    实测就是这样从设置面板里点到过「退出登录」。
+    def walk(acc, depth=0):
+        if depth > 45:
+            return
+        try:
+            role = acc.getRoleName() or ""
+            name = acc.name or ""
+        except Exception:
+            return
+        rect = None
+        try:
+            ext = acc.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+            rect = (ext.x, ext.y, ext.width, ext.height)
+        except Exception:
+            pass
+        yield role, name, rect
+        try:
+            n = acc.childCount
+        except Exception:
+            return
+        for i in range(n):
+            try:
+                child = acc.getChildAtIndex(i)
+            except Exception:
+                continue
+            if child is not None:
+                yield from walk(child, depth + 1)
+
+    desktop = pyatspi.Registry.getDesktop(0)
+    for i in range(desktop.childCount):
+        try:
+            yield from walk(desktop.getChildAtIndex(i))
+        except Exception:
+            continue
+
+
+def _update_changelog_present():
+    """无障碍树里是否还能看到版本更新日志标题。"""
+    try:
+        for role, name, _rect in _walk_named_rects():
+            if role == "label" and UPDATE_TITLE_RE.match((name or "").strip()):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _dismiss_update_changelog():
+    """点掉版本更新日志弹层。成功点击返回 True。"""
+    try:
+        rect = pick_update_close_rect(list(_walk_named_rects()))
+    except Exception:
+        return False
+    if rect is None:
+        return False
+    x, y, w, h = rect
+    inputmod.click_at(x + w // 2, y + h // 2)
+    time.sleep(0.6)
+    return True
+
+def _dismiss_logout_confirm():
+    """若出现「退出登录」确认框，点「取消」避免误退。成功点击返回 True。"""
+    try:
+        names = {(role, (name or "").strip())
+                 for role, name, _ in _walk_named_rects()}
+    except Exception:
+        return False
+    texts = {n for _r, n in names if n}
+    if not any("退出登录" in t for t in texts):
+        return False
+    if "确定" not in texts or "取消" not in texts:
+        return False
+    rect = geometry.node_physical_rect("push button", "取消")
+    if rect is None:
+        return False
+    x, y, w, h = rect
+    inputmod.click_at(x + w // 2, y + h // 2)
+    time.sleep(0.6)
+    return True
+
+
+def _popup_guard():
+    """清掉挡路弹层；清不掉则返回错误说明，清掉则返回 None。
+
+    点击坐标是按无障碍节点算的，但弹层是独立窗口盖在上面时，X 会把点击
+    投给顶层窗口 —— 实测从设置面板误触过「退出登录」。版本更新日志还额外
+    坑：Esc 无效，且树里有两个「关闭」，点错会变成关主窗口。
     """
-    from . import input as inputmod
-    extra = _foreign_windows()
-    if not extra:
+    if not _foreign_windows() and not _update_changelog_present():
         return None
-    for _ in range(2):                       # 先试着用 Esc 关掉
+    for _ in range(3):
+        _dismiss_update_changelog()
+        _dismiss_logout_confirm()
         inputmod.tap_key("Escape")
-        time.sleep(0.5)
-        extra = _foreign_windows()
-        if not extra:
+        time.sleep(0.45)
+        if not _foreign_windows() and not _update_changelog_present():
             return None
+    extra = _foreign_windows()
     labels = ", ".join(f"0x{w['id']:x}({w['w']}x{w['h']})" for w in extra[:3])
+    if _update_changelog_present():
+        return "界面有挡路的版本更新日志，已放弃操作"
     return f"界面有挡路弹层，已放弃操作：{labels}"
 
 
@@ -355,7 +446,6 @@ def _modal_present():
         return "确定" in names and "取消" in names
     except Exception:
         return False
-
 
 # ---------------------------------------------------------------------------
 # 动作

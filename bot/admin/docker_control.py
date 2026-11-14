@@ -14,8 +14,33 @@ _ROOT = Path(__file__).resolve().parent.parent.parent
 _RUN_SH = _ROOT / "docker" / "run.sh"
 _DEFAULT_IMAGE = "wejam/wechat:latest"
 _DEFAULT_NAME = "wejam-session"
+_CALLUS_NAME = "callus-session"
 _CMD_TIMEOUT = 8
 _START_TIMEOUT = 120
+
+
+def session_container_name() -> str:
+    """Resolve which Docker session the admin UI should show / start / stop.
+
+    WEJAM_NAME wins when set. Otherwise map WEJAM_TARGET port:
+    :7701 → callus-session (GUI SoT), :7700 → wejam-session, else callus.
+    """
+    explicit = (os.environ.get("WEJAM_NAME") or "").strip()
+    if explicit:
+        return explicit
+    target = (os.environ.get("WEJAM_TARGET") or "").strip()
+    if not target:
+        try:
+            from bot.config import load_settings
+
+            target = load_settings().wejam_target
+        except Exception:
+            target = "127.0.0.1:7701"
+    hostport = target.rsplit("@", 1)[-1]
+    port = hostport.rsplit(":", 1)[-1].strip()
+    if port == "7700":
+        return _DEFAULT_NAME
+    return _CALLUS_NAME
 
 
 @dataclass(frozen=True)
@@ -189,7 +214,7 @@ def docker_snapshot(
 ) -> DockerSnapshot:
     """Collect daemon, image, and container layers for the run-tab panel."""
     image_name = image or os.environ.get("WEJAM_IMAGE", _DEFAULT_IMAGE)
-    container_name = container or os.environ.get("WEJAM_NAME", _DEFAULT_NAME)
+    container_name = container or session_container_name()
     bin_path = _resolve_docker_bin()
     ok, daemon_error = daemon_ok()
     if not ok:
@@ -231,19 +256,53 @@ def docker_snapshot(
 
 
 def start_session() -> None:
-    """Start wejam-session via docker/run.sh (replaces any existing container)."""
+    """Start or resume the WeChat session container without wiping login state.
+
+    Existing containers are ``docker start``'d (no ``rm``). A new container is
+    created only when the name is absent. Callus (:7701) uses callus-session /
+    callus-data; legacy :7700 uses wejam-session / wejam-data.
+    """
     if not _RUN_SH.is_file():
         raise FileNotFoundError(f"缺少 {_RUN_SH}")
     ok, err = daemon_ok()
     if not ok:
         raise RuntimeError(f"Docker 引擎未就绪：{err or '请先打开 Docker Desktop'}")
-    image_name = os.environ.get("WEJAM_IMAGE", _DEFAULT_IMAGE)
+    name = session_container_name()
+    env = _subprocess_env()
+    env["WEJAM_NAME"] = name
+    if name == _CALLUS_NAME:
+        env.setdefault("WEJAM_PORT", "7701")
+        env.setdefault("WEJAM_VOLUME", "callus-data")
+        # Production callus-session often runs the wejam/wechat image.
+        env.setdefault(
+            "WEJAM_IMAGE",
+            os.environ.get("CALLUS_IMAGE")
+            or os.environ.get("WEJAM_IMAGE")
+            or _DEFAULT_IMAGE,
+        )
+    else:
+        env.setdefault("WEJAM_PORT", "7700")
+        env.setdefault("WEJAM_VOLUME", "wejam-data")
+        env.setdefault("WEJAM_IMAGE", os.environ.get("WEJAM_IMAGE", _DEFAULT_IMAGE))
+    image_name = env.get("WEJAM_IMAGE", _DEFAULT_IMAGE)
+    ctr = container_info(name)
+    if ctr.get("running"):
+        return
+    if ctr.get("exists"):
+        # Resume stopped container — keeps /data volume and WeChat profile.
+        try:
+            proc = _run_docker(["start", name], timeout=_START_TIMEOUT)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("启动容器超时") from exc
+        if proc.returncode != 0:
+            msg = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
+            raise RuntimeError(_short_err(msg, limit=400))
+        return
     img = image_info(image_name)
     if not img.get("present"):
         raise RuntimeError(
             f"本地没有镜像 {image_name}，请先按文档构建后再启动"
         )
-    env = _subprocess_env()
     try:
         proc = subprocess.run(
             ["bash", str(_RUN_SH)],
@@ -262,8 +321,8 @@ def start_session() -> None:
 
 
 def stop_session() -> None:
-    """Stop the WeJam session container; missing container is a no-op."""
-    name = os.environ.get("WEJAM_NAME", _DEFAULT_NAME)
+    """Stop the active session container; missing container is a no-op."""
+    name = session_container_name()
     ok, err = daemon_ok()
     if not ok:
         raise RuntimeError(f"Docker 引擎未就绪：{err or '请先打开 Docker Desktop'}")

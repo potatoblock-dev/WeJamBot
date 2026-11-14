@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 import tomllib
 from dataclasses import dataclass
@@ -26,6 +27,17 @@ SPEAK_MODE_LABELS = {
     SPEAK_MENTION_QUOTE: "仅@和引用回复",
 }
 _SPEAK_ASSIGN = re.compile(r'(?m)^(\s*speak_mode\s*=\s*)(["\']).*?\2')
+_CONTEXT_LIMIT_ASSIGN = re.compile(r"(?m)^(\s*context_message_limit\s*=\s*)(\d+)")
+_EVOLUTION_AUTO_ASSIGN = re.compile(
+    r"(?m)^(\s*prompt_evolution_auto\s*=\s*)(true|false)", re.IGNORECASE
+)
+_EVOLUTION_MESSAGES_ASSIGN = re.compile(
+    r"(?m)^(\s*prompt_evolution_min_messages\s*=\s*)(\d+)"
+)
+# Legacy time-based key; still rewritten away when saving the new message threshold.
+_EVOLUTION_INTERVAL_ASSIGN = re.compile(
+    r"(?m)^(\s*prompt_evolution_min_interval_seconds\s*=\s*)(\d+(?:\.\d+)?)"
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +61,20 @@ class ReplySettings:
     unmentioned_thread_minutes: float = 30.0
     unmentioned_off_peak_only: bool = True
     speak_mode: str = SPEAK_AUTO
+    group_culture_auto: bool = True
+    knowledge_auto: bool = True
+    # Auto-draft per-group prompt evolution (pending until console approve).
+    prompt_evolution_auto: bool = False
+    # Min inbound messages the bot must receive in a group before the next proposal.
+    prompt_evolution_min_messages: int = 50
+    # How many chat bubbles to scroll-load / take from transcript before a reply.
+    context_message_limit: int = 30
+    # Min seconds between observe-path archive digests per impression / group key.
+    observe_min_interval_seconds: float = 120.0
+    # Local inbound ring size per chat display name (SQLite inbound_transcript).
+    transcript_max_messages: int = 200
+    # Observe digest also fires when this many new lines accumulate (OR interval).
+    observe_digest_min_messages: int = 5
     anti_injection: tuple[str, ...] = ()
     stay_on_prompt: tuple[str, ...] = ()
 
@@ -97,6 +123,45 @@ def load_reply_settings(path: Path) -> ReplySettings:
             data.get("unmentioned_off_peak_only", base.unmentioned_off_peak_only)
         ),
         speak_mode=normalize_speak_mode(data.get("speak_mode", base.speak_mode)),
+        group_culture_auto=bool(
+            data.get("group_culture_auto", base.group_culture_auto)
+        ),
+        knowledge_auto=bool(data.get("knowledge_auto", base.knowledge_auto)),
+        prompt_evolution_auto=bool(
+            data.get("prompt_evolution_auto", base.prompt_evolution_auto)
+        ),
+        prompt_evolution_min_messages=max(
+            0,
+            int(
+                data.get(
+                    "prompt_evolution_min_messages",
+                    base.prompt_evolution_min_messages,
+                )
+            ),
+        ),
+        context_message_limit=max(
+            0,
+            int(data.get("context_message_limit", base.context_message_limit)),
+        ),
+        observe_min_interval_seconds=float(
+            data.get(
+                "observe_min_interval_seconds",
+                base.observe_min_interval_seconds,
+            )
+        ),
+        transcript_max_messages=max(
+            10,
+            int(data.get("transcript_max_messages", base.transcript_max_messages)),
+        ),
+        observe_digest_min_messages=max(
+            1,
+            int(
+                data.get(
+                    "observe_digest_min_messages",
+                    base.observe_digest_min_messages,
+                )
+            ),
+        ),
         anti_injection=_string_tuple(data.get("anti_injection")),
         stay_on_prompt=_string_tuple(data.get("stay_on_prompt")),
     )
@@ -135,6 +200,62 @@ def upsert_speak_mode_text(text: str, mode: str) -> str:
         "\n\n# 群发言模式：auto=自动 / all=全部尝试回复 / mention_quote=仅@和引用\n"
         f"{line}\n"
     )
+
+
+def upsert_context_message_limit_text(text: str, limit: int) -> str:
+    """Replace or append context_message_limit without dropping comments."""
+    value = max(0, int(limit))
+    raw = text or ""
+    if _CONTEXT_LIMIT_ASSIGN.search(raw):
+        return _CONTEXT_LIMIT_ASSIGN.sub(rf"\g<1>{value}", raw, count=1)
+    line = f"context_message_limit = {value}"
+    if not raw.strip():
+        return line + "\n"
+    return raw.rstrip() + (
+        "\n\n# 回复前滚动读取的上下文条数（Callus；下一条消息生效）\n"
+        f"{line}\n"
+    )
+
+
+def upsert_prompt_evolution_auto_text(text: str, enabled: bool) -> str:
+    """Replace or append prompt_evolution_auto without dropping comments."""
+    flag = "true" if enabled else "false"
+    raw = text or ""
+    if _EVOLUTION_AUTO_ASSIGN.search(raw):
+        return _EVOLUTION_AUTO_ASSIGN.sub(rf"\g<1>{flag}", raw, count=1)
+    line = f"prompt_evolution_auto = {flag}"
+    if not raw.strip():
+        return line + "\n"
+    return raw.rstrip() + (
+        "\n\n# 群聊成功回复后自动起草「提示词进化」提案（须控制台审批才生效）\n"
+        f"{line}\n"
+    )
+
+
+def upsert_prompt_evolution_min_messages_text(text: str, min_messages: int) -> str:
+    """Replace or append prompt_evolution_min_messages; drop legacy seconds key."""
+    value = max(0, int(min_messages))
+    rendered = str(value)
+    raw = text or ""
+    if _EVOLUTION_INTERVAL_ASSIGN.search(raw):
+        # Remove legacy time-based throttle line when migrating.
+        raw = _EVOLUTION_INTERVAL_ASSIGN.sub("", raw)
+        raw = re.sub(r"\n{3,}", "\n\n", raw)
+    if _EVOLUTION_MESSAGES_ASSIGN.search(raw):
+        return _EVOLUTION_MESSAGES_ASSIGN.sub(rf"\g<1>{rendered}", raw, count=1)
+    line = f"prompt_evolution_min_messages = {rendered}"
+    if not raw.strip():
+        return line + "\n"
+    return raw.rstrip() + (
+        "\n\n# 同群两次进化提案之间，bot 至少再收到这么多条消息；有未审 pending 时不提案\n"
+        f"{line}\n"
+    )
+
+
+# Back-compat alias for older admin imports.
+def upsert_prompt_evolution_interval_text(text: str, seconds: float) -> str:
+    """Deprecated: treat former seconds value as message count when rewriting."""
+    return upsert_prompt_evolution_min_messages_text(text, int(seconds))
 
 
 def policy_guard_lists(text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -329,23 +450,32 @@ class ReplyGate:
         self._hits: dict[str, list[float]] = {}
         self._unat_at: dict[str, float] = {}
         self._last_bot_reply: dict[str, float] = {}
+        # Keys / un-@ stamp reserved by the last successful decide(); cleared on
+        # confirm (send) or abandon (enrich/LLM/send aborted with no reply).
+        self._pending_hit_keys: list[str] = []
+        self._pending_unat_gid: str = ""
+        self._pending_unat_prev: float | None = None
+        self._pending_unat_had: bool = False
+        self._lock = threading.RLock()
 
     def note_bot_reply(self, session_id: str, now: float | None = None) -> None:
         """Remember that the bot replied in this session (for un-@ thread follow-ups)."""
-        self._touch_thread(session_id, now)
+        with self._lock:
+            self._touch_thread(session_id, now)
 
     def note_unmentioned_reply(self, group_id: str, now: float | None = None) -> None:
-        """Record a delivered un-@ group reply for cooldown and per-minute caps."""
+        """Refresh un-@ cooldown timestamp after a delivered reply (hit already reserved in decide)."""
         stamp = time.time() if now is None else now
         gid = group_id.strip()
         if not gid:
             return
-        self._unat_at[gid] = stamp
-        self._record_hit(f"unat:{gid}", stamp)
+        with self._lock:
+            self._unat_at[gid] = stamp
 
     def note_user_engagement(self, session_id: str, now: float | None = None) -> None:
         """Remember @ or name-call so un-@ follow-ups work before the bot finishes replying."""
-        self._touch_thread(session_id, now)
+        with self._lock:
+            self._touch_thread(session_id, now)
 
     def note_inbound_engagement(self, message: IncomingTurn, now: float | None = None) -> None:
         """Open the un-@ thread window when the user names the bot."""
@@ -363,50 +493,122 @@ class ReplyGate:
 
     def current(self) -> ReplySettings:
         """Return the latest policy, reloading from disk when needed."""
-        self._reload_if_changed()
-        return self._settings
+        with self._lock:
+            self._reload_if_changed()
+            return self._settings
 
     def decide(self, message: IncomingTurn, now: float | None = None) -> str | None:
         """Return a skip reason, or None if the bot should reply."""
-        policy = self.current()
-        if not policy.enabled:
-            return "disabled"
-        if message.is_group and not policy.group:
-            return "group_off"
-        if not message.is_group and not policy.c2c:
-            return "c2c_off"
-        user_text = message.user_text
-        if not user_text.strip() or not policy.on_text:
-            return "kind_off"
-        if policy.require_keywords and not _contains_any(user_text, policy.require_keywords):
-            return "require_keywords"
-        if policy.skip_keywords and _contains_any(user_text, policy.skip_keywords):
-            return "skip_keywords"
-        stamp = time.time() if now is None else now
-        addressed = is_addressed(message, policy.bot_names) or message.quotes_bot
-        if addressed:
-            reason = self._rate_limit(message.session_id, policy, stamp)
-            if reason:
-                return reason
-            self._record_hit(message.session_id, stamp)
+        with self._lock:
+            self._reload_if_changed()
+            policy = self._settings
+            if not policy.enabled:
+                return "disabled"
+            if message.is_group and not policy.group:
+                return "group_off"
+            if not message.is_group and not policy.c2c:
+                return "c2c_off"
+            user_text = message.user_text
+            content_type = (message.content_type or "text").strip().lower() or "text"
+            has_media = bool(message.image_paths) or content_type != "text"
+            if not user_text.strip() and not has_media:
+                return "kind_off"
+            if user_text.strip() and not policy.on_text:
+                return "kind_off"
+            if not user_text.strip() and has_media and not policy.on_image:
+                return "kind_off"
+            if (
+                policy.require_keywords
+                and user_text.strip()
+                and not _contains_any(user_text, policy.require_keywords)
+            ):
+                return "require_keywords"
+            if policy.skip_keywords and user_text.strip() and _contains_any(
+                user_text, policy.skip_keywords
+            ):
+                return "skip_keywords"
+            stamp = time.time() if now is None else now
+            addressed = is_addressed(message, policy.bot_names) or message.quotes_bot
+            if addressed:
+                reason = self._rate_limit(message.session_id, policy, stamp)
+                if reason:
+                    return reason
+                self._begin_reservation(hit_keys=[message.session_id])
+                self._record_hit(message.session_id, stamp)
+                return None
+            mode = normalize_speak_mode(policy.speak_mode)
+            if mode == SPEAK_MENTION_QUOTE:
+                return "unmentioned_off"
+            if mode != SPEAK_ALL:
+                if policy.unmentioned_off_peak_only and is_beijing_unmentioned_peak(stamp):
+                    return "unmentioned_peak_hours"
+                reason = _unmentioned_skip(message, policy, self, stamp)
+                if reason:
+                    return reason
+            group_id = message.group_id
+            last = self._unat_at.get(group_id, 0.0)
+            if last > 0 and stamp - last < policy.unmentioned_cooldown_seconds:
+                return "unmentioned_cooldown"
+            cap = self._minute_cap(f"unat:{group_id}", policy, stamp)
+            if cap:
+                return cap
+            if group_id:
+                self._begin_reservation(
+                    hit_keys=[f"unat:{group_id}"],
+                    unat_gid=group_id,
+                    unat_prev=self._unat_at.get(group_id),
+                    unat_had=group_id in self._unat_at,
+                )
+                self._unat_at[group_id] = stamp
+                self._record_hit(f"unat:{group_id}", stamp)
             return None
-        mode = normalize_speak_mode(policy.speak_mode)
-        if mode == SPEAK_MENTION_QUOTE:
-            return "unmentioned_off"
-        if mode != SPEAK_ALL:
-            if policy.unmentioned_off_peak_only and is_beijing_unmentioned_peak(stamp):
-                return "unmentioned_peak_hours"
-            reason = _unmentioned_skip(message, policy, self, stamp)
-            if reason:
-                return reason
-        group_id = message.group_id
-        last = self._unat_at.get(group_id, 0.0)
-        if last > 0 and stamp - last < policy.unmentioned_cooldown_seconds:
-            return "unmentioned_cooldown"
-        cap = self._minute_cap(f"unat:{group_id}", policy, stamp)
-        if cap:
-            return cap
-        return None
+
+    def confirm_reply_slot(self) -> None:
+        """Keep decide() rate-limit hits after a reply was actually delivered."""
+        with self._lock:
+            self._clear_reservation()
+
+    def abandon_reply_slot(self) -> None:
+        """Undo decide() hits/cooldown when handle aborts before a delivered reply."""
+        with self._lock:
+            for key in self._pending_hit_keys:
+                hits = self._hits.get(key)
+                if hits:
+                    hits.pop()
+                    if not hits:
+                        del self._hits[key]
+            gid = self._pending_unat_gid
+            if gid:
+                if self._pending_unat_had:
+                    prev = self._pending_unat_prev
+                    if prev is None:
+                        self._unat_at.pop(gid, None)
+                    else:
+                        self._unat_at[gid] = prev
+                else:
+                    self._unat_at.pop(gid, None)
+            self._clear_reservation()
+
+    def _begin_reservation(
+        self,
+        *,
+        hit_keys: list[str],
+        unat_gid: str = "",
+        unat_prev: float | None = None,
+        unat_had: bool = False,
+    ) -> None:
+        """Remember which decide() side effects to roll back on abandon."""
+        self._pending_hit_keys = list(hit_keys)
+        self._pending_unat_gid = unat_gid
+        self._pending_unat_prev = unat_prev
+        self._pending_unat_had = unat_had
+
+    def _clear_reservation(self) -> None:
+        """Drop pending reservation metadata without touching hit lists."""
+        self._pending_hit_keys = []
+        self._pending_unat_gid = ""
+        self._pending_unat_prev = None
+        self._pending_unat_had = False
 
     def _reload_if_changed(self) -> None:
         """Reload toml when it appears or its mtime changes."""
@@ -487,6 +689,12 @@ def is_addressed(message: IncomingTurn, names: tuple[str, ...]) -> bool:
     return _mentions_bot_name(message.user_text, names)
 
 
+def _has_media_body(message: IncomingTurn) -> bool:
+    """True when the turn is sticker/image/non-text even if user_text is empty."""
+    content_type = (message.content_type or "text").strip().lower() or "text"
+    return bool(message.image_paths) or content_type != "text"
+
+
 def _unmentioned_skip(
     message: IncomingTurn,
     policy: ReplySettings,
@@ -499,11 +707,16 @@ def _unmentioned_skip(
     if not policy.unmentioned_need_hook:
         return None
     text = message.user_text.strip()
+    ttl = max(1.0, policy.unmentioned_thread_minutes) * 60.0
     if not text:
+        # Empty stickers/emotions have no name hook; allow only inside an open thread.
+        if _has_media_body(message) and _has_recent_thread(
+            gate, message.session_id, now, ttl
+        ):
+            return None
         return "unmentioned_no_hook"
     if _mentions_bot_name(text, policy.bot_names):
         return None
-    ttl = max(1.0, policy.unmentioned_thread_minutes) * 60.0
     if _has_recent_thread(gate, message.session_id, now, ttl):
         if _looks_like_group_broadcast(text):
             return "unmentioned_no_hook"
