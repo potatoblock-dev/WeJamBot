@@ -406,6 +406,11 @@ def merge_impressions(from_person_id: str, into_person_id: str) -> dict[str, Any
     return _identity_directory().merge(from_person_id, into_person_id)
 
 
+def link_impression_alias(person_id: str, chat: str, nick: str = "") -> str:
+    """Bind a chat+nick alias onto an existing person_id (cross-group share)."""
+    return _identity_directory().link_alias(person_id, chat, nick)
+
+
 def read_allow_chats() -> list[str]:
     """Return allowed WeChat session names."""
     names = load_allow_chats(load_settings().allow_chats_path)

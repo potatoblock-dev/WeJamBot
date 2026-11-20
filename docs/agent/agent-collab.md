@@ -2,7 +2,7 @@
 
 
 > 多 Agent / 多对话共享的**项目协作记忆**。由 `context.md` 迁移于 2026-11-11 19:57 +0800。
-> 最后更新：2026-11-11 19:57 +0800
+> 最后更新：2026-11-20 07:20 +0800
 
 ## 读哪些
 
@@ -15,9 +15,9 @@
 ## 当前焦点
 
 - **任务**：消息 SoT = **仅** Callus-Bridge GUI `:7701`（个人微信群）。
-- **下一步**：日常勿 `docker rm` / `make destroy`；停容器用「停止容器」/`make down`，再启用 start 复用登录。
+- **下一步**：跨群同人用印象页「绑定别名」或「合并」对齐 person_id；勿自动同名合并。
 - **活跃对话**：GUI Callus 接入（bridge）；封禁风险（risk）
-- **近况**：d24 — 审计 High 三条已修；`make test` 88 passed。
+- **近况**：d25 — `link_alias` 跨群挂别名；同 person_id 共用一份印象。
 
 ## 活跃泳道
 
@@ -50,8 +50,9 @@
 | d22 | 2026-10-29 | 微信登录态靠命名卷 + **不删容器**：`start_session`/`docker/run.sh` 已有则 `docker start`；`make down` 只 stop；`make destroy` 才 rm。重开控制台本身不启停容器。冷启后微信或需一键登录，但不必扫码重登。 | `bot/admin/docker_control.py`、`docker/run.sh`、`../Callus-Bridge/docker/run.sh` |
 | d23 | 2026-10-30 | `consume_messages` 省略 mode 时默认 **listen**（安全，与 d18 一致）；回复类单测须显式 `mode=reply`。不改生产默认。 | `bot/runner.py`、`tests/test_bot_brain.py` |
 | d24 | 2026-10-30 | 群空 emotion：`speak_mode=auto` 仅在活跃 thread 放行；decide 记账后 enrich/发送失败 `abandon_reply_slot`；`ReadLatest` 按 msg_id/index 对齐，否则只填空 sender/chat_type。 | `bot/reply_policy.py`、`bot/chat.py` |
+| d25 | 2026-11-20 | 跨群印象：同一 `person_id` 读写同一档案；控制台「绑定别名」把 `(群,昵称)` 挂到已有 id；两档已存在则用合并。仍不按同名自动认同人（GUI 无 wxid）。 | `bot/identity/directory.py`、`bot/admin/desktop.py` |
 
-完整决策史（24 条）见 [decisions.md](./decisions.md)。
+完整决策史见 [decisions.md](./decisions.md)。
 
 
 ## 进展

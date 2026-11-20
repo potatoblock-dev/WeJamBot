@@ -159,6 +159,57 @@ class IdentityDirectory:
             )
         return out
 
+    def link_alias(
+        self,
+        person_id: str,
+        chat: str,
+        nick: str = "",
+        *,
+        reassign: bool = True,
+    ) -> str:
+        """Point ``(chat, nick)`` at ``person_id`` so cross-group uses one impression.
+
+        Creates a new alias row when unseen. If the pair already points at another
+        person and ``reassign`` is true, rewrites that row (other aliases on the
+        old person stay). Returns the target ``person_id``.
+        """
+        target = (person_id or "").strip()
+        title = (chat or "").strip()
+        name = (nick or "").strip()
+        if not target:
+            raise ValueError("link_alias requires person_id")
+        if not _looks_like_person_id(target):
+            raise ValueError("person_id must be a UUID")
+        if not title:
+            raise ValueError("link_alias requires a chat display name")
+        with self._lock:
+            existing = self._find_unlocked(title, name)
+            if existing == target:
+                return target
+            if existing and not reassign:
+                raise ValueError(
+                    f"alias already bound to {existing[:8]}…; pass reassign=True to move"
+                )
+            if existing:
+                for row in self._aliases:
+                    if _alias_key(row["chat"], row["nick"]) == _alias_key(title, name):
+                        row["person_id"] = target
+                        row["updated_at"] = _utc_now()
+                        break
+            else:
+                self._aliases.append(
+                    {
+                        "chat": title,
+                        "nick": name,
+                        "person_id": target,
+                        "updated_at": _utc_now(),
+                    }
+                )
+            self._save()
+            # Ensure an impression file exists so console edit/save has a home.
+            self._impressions.touch(target, username=name or title)
+            return target
+
     def merge(self, from_person_id: str, into_person_id: str) -> dict[str, Any]:
         """Merge from_person into into_person: impressions + all aliases."""
         source = (from_person_id or "").strip()

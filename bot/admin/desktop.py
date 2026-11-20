@@ -965,8 +965,9 @@ class AdminWindow(QMainWindow):
         root = QWidget()
         outer = QVBoxLayout(root)
         hint = QLabel(
-            "身份按内部 person_id 存档；群昵称只是别名。"
-            "GUI 没有微信号，对方改名后请在下方把旧档案合并到新档案，勿依赖自动识别。"
+            "身份按内部 person_id 存档；同一 person_id 跨群共用、共编辑一份印象。"
+            "群昵称只是别名。把另一群的「会话名+昵称」绑到此人，或用合并把两个档案合成一个；"
+            "GUI 无微信号，不会按同名自动认作同一个人。"
         )
         hint.setWordWrap(True)
         hint.setProperty("role", "muted")
@@ -1000,16 +1001,32 @@ class AdminWindow(QMainWindow):
         form.addRow("印象", self._imp_body)
         self._btn_save_imp = QPushButton("保存印象")
         form.addRow(self._btn_save_imp)
-        merge_box = QGroupBox("改名合并（人工）")
+        link_box = QGroupBox("跨群绑定（挂到当前 person）")
+        link_form = QFormLayout(link_box)
+        self._imp_link_chat = QLineEdit()
+        self._imp_link_chat.setPlaceholderText("会话显示名，如 99+")
+        self._imp_link_nick = QLineEdit()
+        self._imp_link_nick.setPlaceholderText("群昵称；私聊可留空")
+        self._btn_link_alias = QPushButton("绑定别名到此人")
+        self._btn_link_alias.setToolTip(
+            "把该会话+昵称指向当前 person_id；之后该群入站读写同一份印象。"
+            "若别名已挂在别人身上，会改挂到此人（对方其它别名不动）。"
+        )
+        link_form.addRow("会话名", self._imp_link_chat)
+        link_form.addRow("昵称", self._imp_link_nick)
+        link_form.addRow(self._btn_link_alias)
+        form.addRow(link_box)
+        merge_box = QGroupBox("改名/跨群合并（人工）")
         merge_form = QFormLayout(merge_box)
         self._imp_merge_from = QComboBox()
         self._imp_merge_into = QComboBox()
         self._btn_merge_imp = QPushButton("合并到目标")
         self._btn_merge_imp.setToolTip(
-            "将「源」的印象与别名并入「目标」，然后删除源档案。"
+            "将「源」的印象与全部别名并入「目标」，然后删除源档案。"
+            "两群已各有档案时，用合并一次对齐到同一 person_id。"
         )
-        merge_form.addRow("源档案（旧昵称）", self._imp_merge_from)
-        merge_form.addRow("目标档案（新昵称）", self._imp_merge_into)
+        merge_form.addRow("源档案", self._imp_merge_from)
+        merge_form.addRow("目标档案", self._imp_merge_into)
         merge_form.addRow(self._btn_merge_imp)
         form.addRow(merge_box)
         split.addWidget(right)
@@ -1030,7 +1047,8 @@ class AdminWindow(QMainWindow):
         self._transcript_path_label.setProperty("role", "muted")
         outer.addWidget(self._transcript_path_label)
         hint = QLabel(
-            "监听与回复命中的会话都会写入本地环缓冲（每会话最多 transcript_max_messages 条）。"
+            "监听与回复命中的会话都会写入本地环缓冲（每会话最多 transcript_max_messages 条，当前默认 1000）。"
+            "回复只用 context_message_limit 窗口，并对最近 context_recent_focus 条加权。"
             "此处只读浏览；清空需自行处理 SQLite 或等环缓冲自然滚动淘汰。"
         )
         hint.setWordWrap(True)
@@ -1233,6 +1251,7 @@ class AdminWindow(QMainWindow):
         self._btn_new_imp.clicked.connect(self.on_new_impression)
         self._btn_import_imp.clicked.connect(self.on_import_impressions)
         self._btn_merge_imp.clicked.connect(self.on_merge_impressions)
+        self._btn_link_alias.clicked.connect(self.on_link_impression_alias)
         self._imp_search.textChanged.connect(self.render_impressions)
         self._imp_list.currentItemChanged.connect(self.on_impression_selected)
         self._btn_save_culture.clicked.connect(self.on_save_group_culture)
@@ -2075,6 +2094,43 @@ class AdminWindow(QMainWindow):
         self._imp_key_edit.setReadOnly(True)
         self._imp_dirty = False
         self.load_impressions()
+
+    def on_link_impression_alias(self) -> None:
+        """Bind chat+nick to the currently selected person_id for cross-group share."""
+        person_id = self._imp_key_edit.text().strip() or self._imp_key
+        chat = self._imp_link_chat.text().strip()
+        nick = self._imp_link_nick.text().strip()
+        if not person_id:
+            QMessageBox.warning(
+                self,
+                "跨群绑定",
+                "请先在左侧选中一个档案（或填写 person_id）。",
+            )
+            return
+        if not chat:
+            QMessageBox.warning(self, "跨群绑定", "请填写会话显示名。")
+            return
+        try:
+            store.link_impression_alias(person_id, chat, nick)
+        except ValueError as exc:
+            QMessageBox.warning(self, "绑定失败", str(exc))
+            return
+        self._imp_link_chat.clear()
+        self._imp_link_nick.clear()
+        self.load_impressions()
+        # Reselect the same person so alias labels refresh in the form.
+        for i in range(self._imp_list.count()):
+            item = self._imp_list.item(i)
+            if item is not None and str(item.data(Qt.ItemDataRole.UserRole) or "") == person_id:
+                self._imp_list.setCurrentItem(item)
+                break
+        QMessageBox.information(
+            self,
+            "跨群绑定",
+            f"已绑定。之后「{chat}"
+            + (f"：{nick}" if nick else "")
+            + "」入站会读写此印象。",
+        )
 
     def on_merge_impressions(self) -> None:
         """Merge source person into target after confirmation."""

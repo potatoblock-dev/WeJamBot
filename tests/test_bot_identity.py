@@ -73,3 +73,36 @@ def test_unmerged_rename_stays_two_persons(tmp_path: Path) -> None:
     a = identity.resolve("99+", "甲")
     b = identity.resolve("99+", "乙")
     assert a != b
+
+
+def test_link_alias_shares_impression_across_chats(tmp_path: Path) -> None:
+    """Linking a nick from another chat points resolve() at the same person_id."""
+    impressions = ImpressionStore(tmp_path / "impressions")
+    identity = IdentityDirectory(tmp_path / "aliases.json", impressions)
+    person = identity.resolve("99+", "白糖")
+    impressions.save(
+        {
+            "user_key": person,
+            "username": "白糖",
+            "impression": "跨群共用正文",
+        }
+    )
+    identity.link_alias(person, "微信ClawBot", "白糖")
+    assert identity.resolve("微信ClawBot", "白糖") == person
+    assert impressions.load(person).get("impression") == "跨群共用正文"
+    labels = {
+        f"{row['chat']}:{row['nick']}" for row in identity.aliases_for(person)
+    }
+    assert labels == {"99+:白糖", "微信ClawBot:白糖"}
+
+
+def test_link_alias_reassigns_from_other_person(tmp_path: Path) -> None:
+    """Reassign moves one alias onto the target without deleting the other person."""
+    impressions = ImpressionStore(tmp_path / "impressions")
+    identity = IdentityDirectory(tmp_path / "aliases.json", impressions)
+    keep = identity.resolve("99+", "白糖")
+    other = identity.resolve("别群", "白糖")
+    assert keep != other
+    identity.link_alias(keep, "别群", "白糖")
+    assert identity.resolve("别群", "白糖") == keep
+    assert identity.resolve("99+", "白糖") == keep
