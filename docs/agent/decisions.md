@@ -1,7 +1,7 @@
 # Agent Decisions — WeJamBot
 
 > 冷区：完整决策史。按需查阅，勿默认整文件灌进上下文。
-> 最后更新：2026-11-11 19:57 +0800
+> 最后更新：2026-11-21 00:25 +0800
 
 | ID | 日期 | 决策 | 相关文件 |
 |----|------|------|----------|
@@ -29,3 +29,5 @@
 | d22 | 2026-10-29 | 微信登录态靠命名卷 + **不删容器**：`start_session`/`docker/run.sh` 已有则 `docker start`；`make down` 只 stop；`make destroy` 才 rm。重开控制台本身不启停容器。冷启后微信或需一键登录，但不必扫码重登。 | `bot/admin/docker_control.py`、`docker/run.sh`、`../Callus-Bridge/docker/run.sh` |
 | d23 | 2026-10-30 | `consume_messages` 省略 mode 时默认 **listen**（安全，与 d18 一致）；回复类单测须显式 `mode=reply`。不改生产默认。 | `bot/runner.py`、`tests/test_bot_brain.py` |
 | d24 | 2026-10-30 | 群空 emotion：`speak_mode=auto` 仅在活跃 thread 放行；decide 记账后 enrich/发送失败 `abandon_reply_slot`；`ReadLatest` 按 msg_id/index 对齐，否则只填空 sender/chat_type。 | `bot/reply_policy.py`、`bot/chat.py` |
+| d25 | 2026-11-20 | 跨群印象：同一 `person_id` 读写同一档案；控制台「绑定别名」；不按同名自动认同人。 | `bot/identity/directory.py`、`bot/admin/desktop.py` |
+| d26 | 2026-11-21 | **m1** Callus GUI 宿主 bot 活体跑通（旁听+回复+120s 限频等）；tag `milestone/callus-gui-live-m1`。 | `reply_policy.toml`、`bot/transcript/` |

@@ -69,10 +69,12 @@ class ReplySettings:
     prompt_evolution_min_messages: int = 50
     # How many chat bubbles to scroll-load / take from transcript before a reply.
     context_message_limit: int = 30
+    # Within that window, mark the newest N turns as higher-priority for the LLM.
+    context_recent_focus: int = 20
     # Min seconds between observe-path archive digests per impression / group key.
     observe_min_interval_seconds: float = 120.0
     # Local inbound ring size per chat display name (SQLite inbound_transcript).
-    transcript_max_messages: int = 200
+    transcript_max_messages: int = 1000
     # Observe digest also fires when this many new lines accumulate (OR interval).
     observe_digest_min_messages: int = 5
     anti_injection: tuple[str, ...] = ()
@@ -142,6 +144,10 @@ def load_reply_settings(path: Path) -> ReplySettings:
         context_message_limit=max(
             0,
             int(data.get("context_message_limit", base.context_message_limit)),
+        ),
+        context_recent_focus=max(
+            0,
+            int(data.get("context_recent_focus", base.context_recent_focus)),
         ),
         observe_min_interval_seconds=float(
             data.get(

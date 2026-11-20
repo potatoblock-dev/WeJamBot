@@ -15,6 +15,7 @@ from bot.impression.store import ImpressionStore
 from bot.impression.writer import ImpressionWriter
 from bot.memory.store import MemoryStore
 from bot.reply_policy import ReplyGate
+from bot.transcript.focus import apply_recent_focus
 from bot.transcript.store import TranscriptStore
 from tests.test_bot_observe import _RecordingArchive, _SilentSender
 
@@ -28,6 +29,21 @@ def test_transcript_append_and_trim(tmp_path: Path) -> None:
     assert len(rows) == 10
     assert rows[0].text == "m5"
     assert rows[-1].text == "m14"
+
+
+def test_apply_recent_focus_marks_tail() -> None:
+    """Focus marker sits before the last N rows; older rows stay ahead."""
+    history = [
+        {"role": "user", "content": f"m{i}"} for i in range(5)
+    ]
+    out = apply_recent_focus(history, 2)
+    assert out[0]["content"] == "m0"
+    assert out[1]["content"] == "m1"
+    assert out[2]["content"] == "m2"
+    assert "近期对话优先" in out[3]["content"]
+    assert out[4]["content"] == "m3"
+    assert out[5]["content"] == "m4"
+    assert apply_recent_focus(history, 0) == history
 
 
 def test_transcript_list_chats(tmp_path: Path) -> None:

@@ -22,6 +22,7 @@ from bot.prompt_evolution.store import PromptEvolutionStore
 from bot.prompt_evolution.writer import PromptEvolutionWriter
 from bot.reply import TextSender, strip_sticker_markers
 from bot.reply_policy import ReplyGate, is_addressed
+from bot.transcript.focus import apply_recent_focus
 from bot.transcript.store import TranscriptRow, TranscriptStore
 
 _log = logging.getLogger(__name__)
@@ -332,6 +333,9 @@ class ChatBot:
             history = full[:-1] if full else []
         else:
             history = list(self._memory.history(message.session_id))
+        history = apply_recent_focus(
+            history, self._gate.current().context_recent_focus
+        )
         person_id = self._person_id(message)
         profile = self._impressions.touch(person_id, username=message.username)
         speaker = str(profile.get("username") or message.username)

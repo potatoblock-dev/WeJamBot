@@ -2,7 +2,7 @@
 
 
 > 多 Agent / 多对话共享的**项目协作记忆**。由 `context.md` 迁移于 2026-11-11 19:57 +0800。
-> 最后更新：2026-11-20 07:20 +0800
+> 最后更新：2026-11-21 00:25 +0800
 
 ## 读哪些
 
@@ -15,9 +15,15 @@
 ## 当前焦点
 
 - **任务**：消息 SoT = **仅** Callus-Bridge GUI `:7701`（个人微信群）。
-- **下一步**：跨群同人用印象页「绑定别名」或「合并」对齐 person_id；勿自动同名合并。
+- **下一步**：按需收紧 `speak_mode` / 白名单；跨群同人继续人工绑定。
 - **活跃对话**：GUI Callus 接入（bridge）；封禁风险（risk）
-- **近况**：d25 — `link_alias` 跨群挂别名；同 person_id 共用一份印象。
+- **近况**：**m1** Callus GUI 宿主 bot 活体跑通（旁听+回复+限频）；见里程碑。
+
+## 里程碑
+
+| ID | 日期 | 说明 | 定位 |
+|----|------|------|------|
+| m1 | 2026-11-21 | Callus `:7701` 登录后，宿主 listen/reply 在「0x02测试」活体跑通；环缓冲 1000、近 20 句加权、跨群 person_id、容器 start 保登录、回复 `min_interval=120`。 | git tag `milestone/callus-gui-live-m1`；分支 `feat/console-wechat-view` |
 
 ## 活跃泳道
 
@@ -51,6 +57,7 @@
 | d23 | 2026-10-30 | `consume_messages` 省略 mode 时默认 **listen**（安全，与 d18 一致）；回复类单测须显式 `mode=reply`。不改生产默认。 | `bot/runner.py`、`tests/test_bot_brain.py` |
 | d24 | 2026-10-30 | 群空 emotion：`speak_mode=auto` 仅在活跃 thread 放行；decide 记账后 enrich/发送失败 `abandon_reply_slot`；`ReadLatest` 按 msg_id/index 对齐，否则只填空 sender/chat_type。 | `bot/reply_policy.py`、`bot/chat.py` |
 | d25 | 2026-11-20 | 跨群印象：同一 `person_id` 读写同一档案；控制台「绑定别名」把 `(群,昵称)` 挂到已有 id；两档已存在则用合并。仍不按同名自动认同人（GUI 无 wxid）。 | `bot/identity/directory.py`、`bot/admin/desktop.py` |
+| d26 | 2026-11-21 | **m1**：以 Callus GUI 为 SoT 的宿主 bot 活体里程碑（旁听/回复/限频/印象/环缓冲）。默认策略可按风险再收紧，勿回退到 openclaw 进群。 | `reply_policy.toml`、`bot/transcript/`、tag `milestone/callus-gui-live-m1` |
 
 完整决策史见 [decisions.md](./decisions.md)。
 

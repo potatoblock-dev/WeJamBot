@@ -49,6 +49,43 @@ QTabBar::tab:selected {
     background: #454545;
     color: #f0f0f0;
 }
+QListWidget#consoleNav {
+    background-color: #262626;
+    border: none;
+    border-right: 1px solid #505050;
+    outline: none;
+    padding: 6px 4px;
+}
+QListWidget#consoleNav::item {
+    background: transparent;
+    color: #b8b8b8;
+    padding: 10px 4px;
+    margin: 2px 0;
+    border-radius: 4px;
+}
+QListWidget#consoleNav::item:selected {
+    background-color: #454545;
+    color: #ffffff;
+}
+QListWidget#consoleNav::item:hover {
+    background-color: #383838;
+    color: #f0f0f0;
+}
+QWidget#consoleSegmentBar {
+    background: transparent;
+}
+QPushButton#consoleSegment {
+    background-color: #383838;
+    color: #c0c0c0;
+    border: 1px solid #555555;
+    padding: 4px 10px;
+    border-radius: 3px;
+}
+QPushButton#consoleSegment:checked {
+    background-color: #5a5a5a;
+    color: #ffffff;
+    border: 1px solid #888888;
+}
 QPushButton {
     background-color: #404040;
     color: #e8e8e8;

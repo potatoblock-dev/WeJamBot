@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QAction,
     QCloseEvent,
@@ -18,7 +18,6 @@ from PyQt6.QtGui import (
     QKeySequence,
     QMouseEvent,
     QPixmap,
-    QResizeEvent,
 )
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import (
@@ -41,10 +40,8 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QSpinBox,
     QSplitter,
-    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -62,6 +59,7 @@ from bot.admin import (
 )
 from bot.admin.collapsible import CollapsibleSection
 from bot.admin.docker_control import DockerSnapshot
+from bot.admin.nav import ConsoleNav, NavPage, NavSection
 from bot.allowlist import merge_chat_names_for_picker
 from bot.config import load_settings
 from bot.eyes import HandsError
@@ -432,46 +430,8 @@ class _WeChatViewDialog(QDialog):
         super().closeEvent(event)
 
 
-class _TightHint(QLabel):
-    """Word-wrapped intro line that stays as tall as its wrapped text.
-
-    A plain QLabel is vertically Preferred, so extra window height centers
-    the sentence in a tall empty band. Capping at the wrapped height keeps
-    the gap to the page margins.
-    """
-
-    def __init__(self, text: str) -> None:
-        """Show muted wrapping copy without soaking up vertical space."""
-        super().__init__(text)
-        self.setWordWrap(True)
-        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        policy.setHeightForWidth(True)
-        self.setSizePolicy(policy)
-
-    def hasHeightForWidth(self) -> bool:
-        """Let the layout ask for height from the current width."""
-        return True
-
-    def sizeHint(self) -> QSize:
-        """Height of this text wrapped at the label's current width."""
-        width = self.width() if self.width() > 80 else 640
-        line = self.fontMetrics().lineSpacing()
-        return QSize(0, max(self.heightForWidth(width), line))
-
-    def minimumSizeHint(self) -> QSize:
-        """Keep the row shrinkable down to one line."""
-        return QSize(0, self.fontMetrics().lineSpacing())
-
-    def resizeEvent(self, event: QResizeEvent) -> None:
-        """Remeasure after the wrap width changes."""
-        super().resizeEvent(event)
-        if event.oldSize().width() != event.size().width():
-            self.updateGeometry()
-
-
 class AdminWindow(QMainWindow):
-    """Main window: run, WeChat login, Bot 设置, API, persona, policy, impressions."""
+    """Main window with primary/secondary nav for ops, chats, files, and config."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -554,40 +514,69 @@ class AdminWindow(QMainWindow):
         self.refresh_logs()
 
     def _build_ui(self) -> None:
-        """Lay out tabs and controls like the 0x01 console."""
+        """Lay out primary/secondary navigation and page stack."""
         self.setWindowTitle(status_light.window_title(status_light.LIGHT_OFF))
         icon_path = bot_control.project_root() / "assets" / "app-icon.png"
         if icon_path.is_file():
             self.setWindowIcon(QIcon(str(icon_path)))
-        self.resize(960, 680)
+        self.resize(1040, 720)
 
-        tabs = QTabWidget()
-        tabs.addTab(self._build_run_tab(), "运行")
-        tabs.addTab(self._build_login_tab(), "登录")
-        tabs.addTab(self._build_features_tab(), "Bot 设置")
-        tabs.addTab(self._build_api_tab(), "API")
-        tabs.addTab(self._build_persona_tab(), "人设")
-        tabs.addTab(self._build_prompt_evolution_tab(), "提示词进化")
-        tabs.addTab(self._build_policy_tab(), "回复策略")
-        tabs.addTab(self._build_impressions_tab(), "印象")
-        tabs.addTab(self._build_group_culture_tab(), "群文化")
-        tabs.addTab(self._build_transcript_tab(), "聊天记录")
-        self.setCentralWidget(tabs)
+        sections = (
+            NavSection("live", "现场"),
+            NavSection(
+                "chats",
+                "会话",
+                (NavPage("lists", "名单"), NavPage("transcript", "记录")),
+            ),
+            NavSection(
+                "files",
+                "档案",
+                (
+                    NavPage("persona", "人设"),
+                    NavPage("evolution", "进化"),
+                    NavPage("culture", "群文化"),
+                    NavPage("impression", "印象"),
+                ),
+            ),
+            NavSection(
+                "config",
+                "配置",
+                (NavPage("policy", "策略"), NavPage("api", "API")),
+            ),
+        )
+        self._nav = ConsoleNav(sections)
+        self._nav.register("live", "live", self._build_live_page())
+        self._nav.register("chats", "lists", self._build_lists_page())
+        self._nav.register("chats", "transcript", self._build_transcript_tab())
+        self._nav.register("files", "persona", self._build_persona_tab())
+        self._nav.register("files", "evolution", self._build_prompt_evolution_tab())
+        self._nav.register("files", "culture", self._build_group_culture_tab())
+        self._nav.register("files", "impression", self._build_impressions_tab())
+        self._nav.register("config", "policy", self._build_policy_tab())
+        self._nav.register("config", "api", self._build_api_tab())
+        self._nav.set_section_footer("config", self._build_folder_bar())
+        self.setCentralWidget(self._nav)
 
         save_act = QAction("保存", self)
         save_act.setShortcut(QKeySequence.StandardKey.Save)
         save_act.triggered.connect(self._save_visible)
         self.addAction(save_act)
 
-    def _build_run_tab(self) -> QWidget:
-        """Bot start/stop and log tail."""
+    def _build_live_page(self) -> QWidget:
+        """Ops strip, optional login side panel, and message log."""
         root = QWidget()
         layout = QVBoxLayout(root)
-        box = QGroupBox("机器人状态")
-        row = QHBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        status = QGroupBox("状态")
+        status_col = QVBoxLayout(status)
+        bot_row = QHBoxLayout()
         self._status_label = QLabel("检查中…")
-        self._status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        row.addWidget(self._status_label, stretch=1)
+        self._status_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        bot_row.addWidget(self._status_label, stretch=1)
         self._btn_mode = QPushButton("模式：监听")
         self._btn_mode.setToolTip(
             "监听：只旁听/写档，不回复（白名单会话也会改走旁听）。"
@@ -595,76 +584,42 @@ class AdminWindow(QMainWindow):
         )
         self._btn_toggle = QPushButton("启动")
         self._btn_refresh = QPushButton("刷新")
-        row.addWidget(self._btn_mode)
-        row.addWidget(self._btn_toggle)
-        row.addWidget(self._btn_refresh)
-        layout.addWidget(box)
+        bot_row.addWidget(self._btn_mode)
+        bot_row.addWidget(self._btn_toggle)
+        bot_row.addWidget(self._btn_refresh)
+        status_col.addLayout(bot_row)
 
-        self._wejam_hint = QLabel("")
-        self._wejam_hint.setWordWrap(True)
-        self._wejam_hint.setProperty("role", "warning")
-        layout.addWidget(self._wejam_hint)
-
-        docker_box = QGroupBox("微信容器（Docker）")
-        docker_col = QVBoxLayout(docker_box)
         self._docker_label = QLabel("检查中…")
         self._docker_label.setWordWrap(True)
-        self._docker_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        docker_col.addWidget(self._docker_label)
+        self._docker_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._docker_label.setProperty("role", "muted")
+        status_col.addWidget(self._docker_label)
         docker_row = QHBoxLayout()
         self._btn_docker_toggle = QPushButton("启动容器")
+        self._btn_docker_toggle.setToolTip(
+            "复用已有容器与数据卷（不删容器），保留登录态。"
+        )
         self._btn_docker_open = QPushButton("打开 Docker Desktop")
         self._btn_wechat_view = QPushButton("打开画面")
+        self._btn_wechat_view.setToolTip("交互容器内微信画面。")
         docker_row.addWidget(self._btn_docker_toggle)
         docker_row.addWidget(self._btn_docker_open)
         docker_row.addWidget(self._btn_wechat_view)
         docker_row.addStretch()
-        docker_col.addLayout(docker_row)
-        layout.addWidget(docker_box)
+        status_col.addLayout(docker_row)
+        layout.addWidget(status)
 
-        hint = QLabel(
-            "「模式：监听/回复」切换后下一条消息即生效，不必重启。"
-            "监听时不回复，白名单会话也会走旁听写档；回复时按白名单正常回复。"
-            "人设与 reply_policy 保存后下一条消息即生效。"
-            "改代码后先点停止再启动。"
-            "微信容器「启动」会复用已有容器与数据卷（不删容器），以保留登录态；"
-            "仅「停止容器」会停进程，再次启动一般可回到已登录/一键登录。"
-            "「打开画面」可交互容器内微信。"
-        )
-        hint.setWordWrap(True)
-        hint.setProperty("role", "muted")
-        layout.addWidget(hint)
-
-        layout.addWidget(QLabel("消息监控日志"))
-        self._log_view = QTextEdit()
-        self._log_view.setObjectName("logView")
-        self._log_view.setReadOnly(True)
-        self._log_view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
-        self._log_view.setPlaceholderText("启动后应出现 inbound → 正在回复 → 正在发送 → replied")
-        layout.addWidget(self._log_view, stretch=1)
-
-        log_actions = QHBoxLayout()
-        self._btn_log = QPushButton("立即刷新日志")
-        self._btn_clear_log = QPushButton("清空日志")
-        self._btn_clear_log.setToolTip("按一次进入确认，再按一次清空 data/bot.log")
-        log_actions.addWidget(self._btn_log)
-        log_actions.addWidget(self._btn_clear_log)
-        layout.addLayout(log_actions)
-        return root
-
-    def _build_login_tab(self) -> QWidget:
-        """WeJam QR login, account summary when logged in, and logout."""
-        root = QWidget()
-        layout = QVBoxLayout(root)
-        hint = QLabel(
-            "未登录时拉取二维码扫码；登录成功后显示账号摘要。"
-            "退出登录会操作容器里微信的设置面板。"
-        )
-        hint.setWordWrap(True)
-        hint.setProperty("role", "muted")
-        layout.addWidget(hint)
+        hints = QHBoxLayout()
+        self._wejam_hint = QLabel("")
+        self._wejam_hint.setWordWrap(True)
+        self._wejam_hint.setProperty("role", "warning")
         self._login_hint = QLabel("")
-        layout.addWidget(self._login_hint)
+        self._login_hint.setProperty("role", "muted")
+        hints.addWidget(self._wejam_hint, stretch=1)
+        hints.addWidget(self._login_hint)
+        layout.addLayout(hints)
 
         self._account_box = QGroupBox("已登录账号")
         account_l = QVBoxLayout(self._account_box)
@@ -677,6 +632,7 @@ class AdminWindow(QMainWindow):
         account_row = QHBoxLayout()
         self._btn_refresh_account = QPushButton("刷新账号信息")
         self._btn_logout = QPushButton("退出登录")
+        self._btn_logout.setToolTip("操作容器里微信的设置面板退出登录。")
         account_row.addWidget(self._btn_refresh_account)
         account_row.addWidget(self._btn_logout)
         account_row.addStretch()
@@ -684,23 +640,54 @@ class AdminWindow(QMainWindow):
         self._account_box.setVisible(False)
         layout.addWidget(self._account_box)
 
+        body = QHBoxLayout()
+        body.setSpacing(8)
+        log_col = QVBoxLayout()
+        log_col.addWidget(QLabel("消息监控日志"))
+        self._log_view = QTextEdit()
+        self._log_view.setObjectName("logView")
+        self._log_view.setReadOnly(True)
+        self._log_view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self._log_view.setPlaceholderText(
+            "启动后应出现 inbound → 正在回复 → 正在发送 → replied"
+        )
+        log_col.addWidget(self._log_view, stretch=1)
+        log_actions = QHBoxLayout()
+        self._btn_log = QPushButton("立即刷新日志")
+        self._btn_clear_log = QPushButton("清空日志")
+        self._btn_clear_log.setToolTip("按一次进入确认，再按一次清空 data/bot.log")
+        log_actions.addWidget(self._btn_log)
+        log_actions.addWidget(self._btn_clear_log)
+        log_actions.addStretch()
+        log_col.addLayout(log_actions)
+        body.addLayout(log_col, stretch=1)
+
+        self._login_side = QWidget()
+        self._login_side.setMinimumWidth(300)
+        login_l = QVBoxLayout(self._login_side)
+        login_l.setContentsMargins(0, 0, 0, 0)
         self._qr_label = QLabel("尚未拉取二维码")
         self._qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._qr_label.setMinimumHeight(280)
-        layout.addWidget(self._qr_label, stretch=1)
-        row = QHBoxLayout()
+        self._qr_label.setToolTip("未登录时从 Callus 拉取屏幕上的扫码登录二维码。")
+        login_l.addWidget(self._qr_label, stretch=1)
+        qr_row = QHBoxLayout()
         self._btn_qr = QPushButton("刷新二维码")
         self._btn_submit_login = QPushButton("一键登录")
-        row.addWidget(self._btn_qr)
-        row.addWidget(self._btn_submit_login)
-        row.addStretch()
-        layout.addLayout(row)
+        qr_row.addWidget(self._btn_qr)
+        qr_row.addWidget(self._btn_submit_login)
+        login_l.addLayout(qr_row)
+        body.addWidget(self._login_side)
+        layout.addLayout(body, stretch=1)
         return root
 
-    def _build_features_tab(self) -> QWidget:
-        """Speak-mode picker, whitelist, and folder shortcuts."""
+    def _build_lists_page(self) -> QWidget:
+        """Speak mode plus whitelist and observe lists side by side."""
         root = QWidget()
         layout = QVBoxLayout(root)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
         speak = QGroupBox("回复模式")
         feat = QVBoxLayout(speak)
         mode_row = QHBoxLayout()
@@ -708,9 +695,9 @@ class AdminWindow(QMainWindow):
         self._speak_group = QButtonGroup(self)
         self._speak_group.setExclusive(True)
         tips = {
-            "auto": "沿用未点名规则和工作日高峰",
-            "all": "白名单会话里每条都尝试回复",
-            "mention_quote": "仅在正文出现 bot 名时回复",
+            "auto": "沿用未点名规则和工作日高峰；写入 reply_policy.toml，下一条消息生效。",
+            "all": "白名单会话里每条都尝试回复；写入 reply_policy.toml，下一条消息生效。",
+            "mention_quote": "仅在正文出现 bot 名时回复；写入 reply_policy.toml，下一条消息生效。",
         }
         for mode, label in store.speak_mode_options():
             btn = QPushButton(label)
@@ -719,24 +706,20 @@ class AdminWindow(QMainWindow):
             self._speak_group.addButton(btn)
             self._speak_buttons[mode] = btn
             mode_row.addWidget(btn)
+        mode_row.addStretch()
         feat.addLayout(mode_row)
-        feat_hint = QLabel("点选一项即写入 reply_policy.toml，下一条消息生效，不必重启。")
-        feat_hint.setWordWrap(True)
-        feat_hint.setProperty("role", "muted")
-        feat.addWidget(feat_hint)
         layout.addWidget(speak)
 
+        lists = QHBoxLayout()
+        lists.setSpacing(8)
+
         allow = QGroupBox("白名单会话")
-        allow_l = QVBoxLayout(allow)
-        allow_hint = QLabel(
-            "勾选要回复的微信会话（显示名须与会话列表一致）。"
-            "空则不回复。点「刷新会话列表」从容器拉取；名单外但仍在白名单里的项也会显示。"
+        allow.setToolTip(
+            "勾选要回复的微信会话（显示名须与会话列表一致）。空则不回复。"
+            "刷新从容器拉取；名单外但仍在白名单里的项也会显示。"
         )
-        allow_hint.setWordWrap(True)
-        allow_hint.setProperty("role", "muted")
-        allow_l.addWidget(allow_hint)
+        allow_l = QVBoxLayout(allow)
         self._allow_list = QListWidget()
-        self._allow_list.setMinimumHeight(180)
         allow_l.addWidget(self._allow_list)
         self._allow_summary = QLabel("")
         self._allow_summary.setWordWrap(True)
@@ -747,24 +730,16 @@ class AdminWindow(QMainWindow):
         self._btn_save_allow = QPushButton("保存白名单")
         allow_row.addWidget(self._btn_refresh_allow)
         allow_row.addWidget(self._btn_save_allow)
-        allow_row.addStretch()
         allow_l.addLayout(allow_row)
-        layout.addWidget(allow)
+        lists.addWidget(allow, stretch=1)
 
         observe = QGroupBox("旁听会话")
-        observe_l = QVBoxLayout(observe)
-        observe_hint = QLabel(
-            "勾选只写印象/群文化（及可选提示词进化）、不回复的会话。"
-            "与白名单重叠时以回复为准。点「刷新会话列表」与白名单共用同一批会话名。"
-            "群改名后显示名会变，须重新勾选并保存旁听名单。"
-            "旁听命中会写入本地全文环缓冲（见「聊天记录」页 / data/bot.sqlite3）；"
-            "档案按条数/间隔批量更新。"
+        observe.setToolTip(
+            "只写印象/群文化（及可选提示词进化）、不回复。"
+            "与白名单重叠时以回复为准。群改名后须重新勾选并保存。"
         )
-        observe_hint.setWordWrap(True)
-        observe_hint.setProperty("role", "muted")
-        observe_l.addWidget(observe_hint)
+        observe_l = QVBoxLayout(observe)
         self._observe_list = QListWidget()
-        self._observe_list.setMinimumHeight(160)
         observe_l.addWidget(self._observe_list)
         self._observe_summary = QLabel("")
         self._observe_summary.setWordWrap(True)
@@ -775,33 +750,32 @@ class AdminWindow(QMainWindow):
         self._btn_save_observe = QPushButton("保存旁听名单")
         observe_row.addWidget(self._btn_refresh_observe)
         observe_row.addWidget(self._btn_save_observe)
-        observe_row.addStretch()
         observe_l.addLayout(observe_row)
-        layout.addWidget(observe)
+        lists.addWidget(observe, stretch=1)
 
-        files = QGroupBox("本地文件")
-        file_row = QHBoxLayout(files)
+        layout.addLayout(lists, stretch=1)
+        return root
+
+    def _build_folder_bar(self) -> QWidget:
+        """Config-section footer that opens local data folders."""
+        bar = QWidget()
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(0, 4, 0, 0)
+        row.setSpacing(6)
         self._btn_personas_folder = QPushButton("打开人设")
         self._btn_knowledge_folder = QPushButton("打开知识库")
         self._btn_project_folder = QPushButton("打开项目根")
-        file_row.addWidget(self._btn_personas_folder)
-        file_row.addWidget(self._btn_knowledge_folder)
-        file_row.addWidget(self._btn_project_folder)
-        layout.addWidget(files)
-        layout.addStretch(1)
-        return root
+        row.addWidget(self._btn_personas_folder)
+        row.addWidget(self._btn_knowledge_folder)
+        row.addWidget(self._btn_project_folder)
+        row.addStretch()
+        return bar
 
     def _build_api_tab(self) -> QWidget:
         """Edit project .env with secrets masked."""
         root = QWidget()
         layout = QVBoxLayout(root)
-        hint = QLabel(
-            "写入项目根目录 .env（不进 git）。密钥框留空表示保持原值不改写；"
-            "保存后需在「运行」页重启闲聊进程才会生效。"
-        )
-        hint.setWordWrap(True)
-        hint.setProperty("role", "muted")
-        layout.addWidget(hint)
+        layout.setContentsMargins(0, 0, 0, 0)
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         self._api_target = QLineEdit()
@@ -819,6 +793,7 @@ class AdminWindow(QMainWindow):
             "wejam.v1 桥地址。主路径 Callus GUI :7701（可进个人群）；"
             "openclaw 私聊旁路 :7702；遗留 WeJam :7700。微信画面仅 GUI 桥可用。"
         )
+        self._api_llm_key.setToolTip("留空表示保持原值不改写；写入项目根 .env（不进 git）。")
         form.addRow("WEJAM_TARGET", self._api_target)
         form.addRow("BOT_NAME", self._api_bot_name)
         form.addRow("LLM_BASE_URL", self._api_llm_base)
@@ -830,6 +805,9 @@ class AdminWindow(QMainWindow):
         self._api_archive_key = QLineEdit()
         self._api_archive_key.setEchoMode(QLineEdit.EchoMode.Password)
         self._api_archive_key.setPlaceholderText("留空=沿用 LLM_API_KEY / 不改已保存")
+        self._api_archive_key.setToolTip(
+            "留空沿用 LLM_API_KEY / 不改已保存。保存后需在现场页重启闲聊进程。"
+        )
         self._api_archive_model = QLineEdit()
         self._api_archive_model.setPlaceholderText("留空=沿用 LLM_MODEL")
         self._api_archive_base.setPlaceholderText("留空=沿用 LLM_BASE_URL")
@@ -855,15 +833,16 @@ class AdminWindow(QMainWindow):
         split = QSplitter(Qt.Orientation.Horizontal)
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        hint = QLabel("点选只用来编辑。点「启用」才切换线上口吻。改 txt 后须保存才会写入文件。")
-        hint.setWordWrap(True)
-        hint.setProperty("role", "muted")
-        left_layout.addWidget(hint)
+        left_layout.setContentsMargins(0, 0, 0, 0)
         self._persona_list = QListWidget()
+        self._persona_list.setToolTip(
+            "点选只用来编辑。点「启用」才切换线上口吻。改 txt 后须保存才会写入文件。"
+        )
         left_layout.addWidget(self._persona_list)
         pack_actions = QHBoxLayout()
         self._btn_new_persona = QPushButton("新建")
         self._btn_enable_persona = QPushButton("启用")
+        self._btn_enable_persona.setToolTip("切换线上口吻；点选列表只用于编辑。")
         self._btn_delete_persona = QPushButton("删除")
         pack_actions.addWidget(self._btn_new_persona)
         pack_actions.addWidget(self._btn_enable_persona)
@@ -902,18 +881,17 @@ class AdminWindow(QMainWindow):
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         page = QWidget()
         layout = QVBoxLayout(page)
-        hint = QLabel("上方改回复开关与频率；下方两块可折叠。保存后下一条消息生效。")
-        hint.setWordWrap(True)
-        hint.setProperty("role", "muted")
-        layout.addWidget(hint)
         switches = QGroupBox("回复开关与频率（reply_policy.toml）")
+        switches.setToolTip("下方两块可折叠。保存后下一条消息生效。")
         switches_layout = QVBoxLayout(switches)
         context_row = QHBoxLayout()
-        context_row.addWidget(QLabel("上下文条数（Callus 滚动读取）"))
+        context_row.addWidget(QLabel("上下文条数"))
         self._context_limit = QSpinBox()
         self._context_limit.setRange(0, 500)
         self._context_limit.setValue(30)
-        self._context_limit.setToolTip("回复前滚动读取的消息条数；0 表示只读当前可见窗。下一条消息生效。")
+        self._context_limit.setToolTip(
+            "回复前滚动读取 / 本地环缓冲窗口条数；0 表示只读当前可见窗。下一条消息生效。"
+        )
         self._context_limit.valueChanged.connect(self._on_context_limit_changed)
         context_row.addWidget(self._context_limit)
         context_row.addStretch(1)
@@ -964,19 +942,15 @@ class AdminWindow(QMainWindow):
         """Speaker impression list and editor, plus manual rename merge."""
         root = QWidget()
         outer = QVBoxLayout(root)
-        hint = QLabel(
-            "身份按内部 person_id 存档；同一 person_id 跨群共用、共编辑一份印象。"
-            "群昵称只是别名。把另一群的「会话名+昵称」绑到此人，或用合并把两个档案合成一个；"
-            "GUI 无微信号，不会按同名自动认作同一个人。"
-        )
-        hint.setWordWrap(True)
-        hint.setProperty("role", "muted")
-        outer.addWidget(hint)
+        outer.setContentsMargins(0, 0, 0, 0)
         split = QSplitter(Qt.Orientation.Horizontal)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         self._imp_search = QLineEdit()
         self._imp_search.setPlaceholderText("按昵称、别名或 person_id 搜索…")
+        self._imp_search.setToolTip(
+            "同一 person_id 跨群共用一份印象。绑定别名或合并对齐；GUI 无微信号，不按同名自动合并。"
+        )
         left_layout.addWidget(self._imp_search)
         self._imp_list = QListWidget()
         left_layout.addWidget(self._imp_list)
@@ -1039,21 +1013,17 @@ class AdminWindow(QMainWindow):
         """Browse local listen/reply transcript rings stored in bot.sqlite3."""
         root = QWidget()
         outer = QVBoxLayout(root)
+        outer.setContentsMargins(0, 0, 0, 0)
         self._transcript_path_label = QLabel("")
         self._transcript_path_label.setWordWrap(True)
         self._transcript_path_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self._transcript_path_label.setProperty("role", "muted")
-        outer.addWidget(self._transcript_path_label)
-        hint = QLabel(
-            "监听与回复命中的会话都会写入本地环缓冲（每会话最多 transcript_max_messages 条，当前默认 1000）。"
-            "回复只用 context_message_limit 窗口，并对最近 context_recent_focus 条加权。"
-            "此处只读浏览；清空需自行处理 SQLite 或等环缓冲自然滚动淘汰。"
+        self._transcript_path_label.setToolTip(
+            "环缓冲只读浏览。回复用 context_message_limit 窗口；清空需自行处理 SQLite。"
         )
-        hint.setWordWrap(True)
-        hint.setProperty("role", "muted")
-        outer.addWidget(hint)
+        outer.addWidget(self._transcript_path_label)
         tools = QHBoxLayout()
         self._btn_transcript_refresh = QPushButton("刷新")
         self._btn_transcript_folder = QPushButton("打开数据目录")
@@ -1092,14 +1062,13 @@ class AdminWindow(QMainWindow):
         """Pending prompt-evolution proposals and approved per-group overlays."""
         root = QWidget()
         outer = QVBoxLayout(root)
-        hint = _TightHint(
-            "群聊成功回复或旁听写档后可自动起草「本群进化提示词」提案；须在此批准后才会注入该群。"
-            "节流按 bot 收到的该群消息条数计。不改全局人设。默认关闭自动提案。"
-        )
-        hint.setProperty("role", "muted")
-        outer.addWidget(hint)
+        outer.setContentsMargins(0, 0, 0, 0)
         controls = QHBoxLayout()
-        self._evo_auto = QCheckBox("自动提案（prompt_evolution_auto）")
+        self._evo_auto = QCheckBox("自动提案")
+        self._evo_auto.setToolTip(
+            "群聊成功回复或旁听写档后起草本群进化提示词；须批准后才注入。"
+            "不改全局人设。默认关闭。"
+        )
         controls.addWidget(self._evo_auto)
         controls.addWidget(QLabel("同群最少收到消息数"))
         self._evo_interval = QSpinBox()
@@ -1161,15 +1130,13 @@ class AdminWindow(QMainWindow):
         split = QSplitter(Qt.Orientation.Horizontal)
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        hint = QLabel(
-            "群消息成功回复或旁听写档后会自动更新本群备忘（可在 reply_policy.toml 关 group_culture_auto）。"
-            "此处可改写或清空；只记群梗与风向，不记个人隐私。"
-        )
-        hint.setWordWrap(True)
-        hint.setProperty("role", "muted")
-        left_layout.addWidget(hint)
+        left_layout.setContentsMargins(0, 0, 0, 0)
         self._culture_search = QLineEdit()
         self._culture_search.setPlaceholderText("按备注名或会话名搜索…")
+        self._culture_search.setToolTip(
+            "成功回复或旁听写档后可自动更新（reply_policy.toml 的 group_culture_auto）。"
+            "只记群梗与风向，不记个人隐私。"
+        )
         left_layout.addWidget(self._culture_search)
         self._culture_list = QListWidget()
         left_layout.addWidget(self._culture_list)
@@ -1346,14 +1313,20 @@ class AdminWindow(QMainWindow):
         self._sync_login_tab(view)
 
     def _sync_login_tab(self, view: wejam_status.WejamView) -> None:
-        """Show account panel only when logged in; refresh summary on phase change."""
+        """Toggle account strip vs QR side panel; refresh summary on phase change."""
         logged_in = bool(view.reachable and view.phase == "LOGGED_IN")
         self._account_box.setVisible(logged_in)
         self._btn_logout.setVisible(logged_in)
         self._btn_refresh_account.setVisible(logged_in)
+        self._login_side.setVisible(not logged_in)
         self._qr_label.setVisible(not logged_in)
         self._btn_qr.setVisible(not logged_in)
         self._btn_submit_login.setVisible(not logged_in)
+        if view.reachable and view.phase and not logged_in:
+            self._login_hint.setText(f"登录阶段：{view.phase}")
+            self._login_hint.setProperty("role", "muted")
+            self._login_hint.style().unpolish(self._login_hint)
+            self._login_hint.style().polish(self._login_hint)
         phase_changed = view.phase != self._last_login_phase
         self._last_login_phase = view.phase
         self._login_poll_tick += 1
