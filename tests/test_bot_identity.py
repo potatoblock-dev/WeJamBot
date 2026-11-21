@@ -154,3 +154,16 @@ def test_delete_person_removes_aliases_and_file(tmp_path: Path) -> None:
     assert identity.lookup("99+", "白糖") is None
     assert identity.lookup("别群", "白糖") is None
     assert not impressions.path_for(person).is_file()
+
+
+def test_live_directory_reloads_after_other_process_merge(tmp_path: Path) -> None:
+    """Admin console writes via another IdentityDirectory; live bot must see it."""
+    path = tmp_path / "aliases.json"
+    impressions = ImpressionStore(tmp_path / "impressions")
+    live = IdentityDirectory(path, impressions)
+    admin = IdentityDirectory(path, impressions)
+    old_id = live.resolve("99+", "旧昵称")
+    new_id = live.resolve("99+", "新昵称")
+    admin.merge(old_id, new_id)
+    assert live.resolve("99+", "旧昵称") == new_id
+    assert live.lookup("99+", "旧昵称") == new_id

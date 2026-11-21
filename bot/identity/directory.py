@@ -31,6 +31,7 @@ class IdentityDirectory:
         self._lock = threading.RLock()
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._aliases: list[dict[str, str]] = []
+        self._mtime = -1.0
         self._load()
         self.migrate_legacy_impressions()
 
@@ -38,11 +39,14 @@ class IdentityDirectory:
         """Read aliases.json from disk (empty table when missing/corrupt)."""
         if not self._path.is_file():
             self._aliases = []
+            self._mtime = -1.0
             return
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
+            self._mtime = self._path.stat().st_mtime
         except (OSError, json.JSONDecodeError):
             self._aliases = []
+            self._mtime = -1.0
             return
         rows = data.get("aliases") if isinstance(data, dict) else None
         if not isinstance(rows, list):
@@ -66,6 +70,21 @@ class IdentityDirectory:
             )
         self._aliases = cleaned
 
+    def _reload_if_changed(self) -> None:
+        """Pick up aliases.json written by another process (e.g. admin console)."""
+        if not self._path.is_file():
+            if self._mtime != -1.0 or self._aliases:
+                self._aliases = []
+                self._mtime = -1.0
+            return
+        try:
+            mtime = self._path.stat().st_mtime
+        except OSError:
+            return
+        if mtime == self._mtime:
+            return
+        self._load()
+
     def _save(self) -> None:
         """Persist the in-memory alias table."""
         payload = {"aliases": self._aliases}
@@ -73,6 +92,10 @@ class IdentityDirectory:
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+        try:
+            self._mtime = self._path.stat().st_mtime
+        except OSError:
+            self._mtime = -1.0
 
     def resolve(self, chat: str, nick: str = "") -> str:
         """Return person_id for this chat+nick, creating one when unseen."""
@@ -81,6 +104,7 @@ class IdentityDirectory:
         if not title:
             raise ValueError("resolve requires a chat display name")
         with self._lock:
+            self._reload_if_changed()
             existing = self._find_unlocked(title, name)
             if existing:
                 return existing
@@ -99,6 +123,7 @@ class IdentityDirectory:
     def lookup(self, chat: str, nick: str = "") -> str | None:
         """Return person_id when the alias exists, else None (no create)."""
         with self._lock:
+            self._reload_if_changed()
             return self._find_unlocked((chat or "").strip(), (nick or "").strip())
 
     def _find_unlocked(self, chat: str, nick: str) -> str | None:
@@ -113,11 +138,13 @@ class IdentityDirectory:
         """Return all alias rows pointing at this person."""
         pid = (person_id or "").strip()
         with self._lock:
+            self._reload_if_changed()
             return [dict(row) for row in self._aliases if row["person_id"] == pid]
 
     def list_persons(self) -> list[dict[str, Any]]:
         """Summarize each person_id with current nicknames for the admin UI."""
         with self._lock:
+            self._reload_if_changed()
             by_id: dict[str, list[dict[str, str]]] = {}
             for row in self._aliases:
                 by_id.setdefault(row["person_id"], []).append(dict(row))
@@ -183,6 +210,7 @@ class IdentityDirectory:
         if not title:
             raise ValueError("link_alias requires a chat display name")
         with self._lock:
+            self._reload_if_changed()
             existing = self._find_unlocked(title, name)
             if existing == target:
                 return target
@@ -218,6 +246,7 @@ class IdentityDirectory:
             raise ValueError("unlink_alias requires a chat display name")
         want = _alias_key(title, name)
         with self._lock:
+            self._reload_if_changed()
             kept: list[dict[str, str]] = []
             removed = False
             for row in self._aliases:
@@ -237,6 +266,7 @@ class IdentityDirectory:
         if not target:
             raise ValueError("delete_person requires person_id")
         with self._lock:
+            self._reload_if_changed()
             before = len(self._aliases)
             self._aliases = [row for row in self._aliases if row["person_id"] != target]
             aliases_removed = len(self._aliases) != before
@@ -254,6 +284,7 @@ class IdentityDirectory:
         if source == target:
             raise ValueError("cannot merge a person into itself")
         with self._lock:
+            self._reload_if_changed()
             src_rec = self._impressions.load(source)
             dst_rec = self._impressions.load(target)
             src_body = str(src_rec.get("impression") or "").strip()

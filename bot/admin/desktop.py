@@ -223,10 +223,7 @@ class _WeChatViewDialog(QDialog):
         self._bridge = _WeChatViewBridge(self)
         self._bridge.frame_ready.connect(self._on_frame_ready)
         self._bridge.input_done.connect(self._on_input_done)
-        self._status = QLabel(
-            "点击画面即可操作；左键后若出现链接等弹层会自动 Esc。"
-            "右键不自动关（菜单）。也可点「关闭弹层」或按 Esc。"
-        )
+        self._status = QLabel("点击即可操作。左键弹层会自动关掉，右键菜单不会。")
         self._status.setProperty("role", "muted")
         self._status.setWordWrap(True)
         self._btn_dismiss = QPushButton("关闭弹层")
@@ -666,10 +663,7 @@ class AdminWindow(QMainWindow):
         )
         bot_row.addWidget(self._status_label, stretch=1)
         self._btn_mode = QPushButton("模式：监听")
-        self._btn_mode.setToolTip(
-            "监听：只旁听/写档，不回复（白名单会话也会改走旁听）。"
-            "回复：按白名单正常回复。下一条消息生效，不必重启。"
-        )
+        self._btn_mode.setToolTip("监听只写档；回复按白名单。下一条消息生效。")
         self._btn_toggle = QPushButton("启动")
         self._btn_refresh = QPushButton("刷新")
         bot_row.addWidget(self._btn_mode)
@@ -783,9 +777,9 @@ class AdminWindow(QMainWindow):
         self._speak_group = QButtonGroup(self)
         self._speak_group.setExclusive(True)
         tips = {
-            "auto": "沿用未点名规则和工作日高峰；写入 reply_policy.toml，下一条消息生效。",
-            "all": "回复勾选的会话里每条都尝试回复；写入 reply_policy.toml，下一条消息生效。",
-            "mention_quote": "仅在正文出现 bot 名时回复；写入 reply_policy.toml，下一条消息生效。",
+            "auto": "按未点名规则和工作日高峰。",
+            "all": "勾选的会话每条都尝试回复。",
+            "mention_quote": "仅正文出现 bot 名时回复。",
         }
         for mode, label in store.speak_mode_options():
             btn = QPushButton(label)
@@ -799,10 +793,7 @@ class AdminWindow(QMainWindow):
         layout.addWidget(speak)
 
         chats = QGroupBox("会话名单")
-        chats.setToolTip(
-            "旁听：写印象/群文化（及可选提示词进化）。"
-            "回复：在旁听之上按白名单回复。勾选回复会自动旁听；取消旁听会取消回复。"
-        )
+        chats.setToolTip("回复会自动旁听；取消旁听则取消回复。")
         chats_l = QVBoxLayout(chats)
         self._chat_table = QTableWidget(0, 3)
         self._chat_table.setHorizontalHeaderLabels(["会话", "旁听", "回复"])
@@ -825,9 +816,7 @@ class AdminWindow(QMainWindow):
         row = QHBoxLayout()
         self._btn_refresh_lists = QPushButton("刷新会话列表")
         self._btn_save_lists = QPushButton("保存名单")
-        self._btn_save_lists.setToolTip(
-            "同时写入旁听名单与回复白名单；runner 下一条消息重读。"
-        )
+        self._btn_save_lists.setToolTip("写入旁听与回复名单，下一条消息生效。")
         row.addWidget(self._btn_refresh_lists)
         row.addWidget(self._btn_save_lists)
         row.addStretch()
@@ -868,11 +857,8 @@ class AdminWindow(QMainWindow):
         self._api_key_hint = QLabel("")
         self._api_key_hint.setProperty("role", "muted")
         self._api_target.setPlaceholderText("推荐 127.0.0.1:7701（Callus GUI）")
-        self._api_target.setToolTip(
-            "wejam.v1 桥地址。主路径 Callus GUI :7701（可进个人群）；"
-            "openclaw 私聊旁路 :7702；遗留 WeJam :7700。微信画面仅 GUI 桥可用。"
-        )
-        self._api_llm_key.setToolTip("留空表示保持原值不改写；写入项目根 .env（不进 git）。")
+        self._api_target.setToolTip("桥地址。常用 127.0.0.1:7701。")
+        self._api_llm_key.setToolTip("留空不改。写入 .env，不进 git。")
         form.addRow("WEJAM_TARGET", self._api_target)
         form.addRow("BOT_NAME", self._api_bot_name)
         form.addRow("LLM_BASE_URL", self._api_llm_base)
@@ -881,23 +867,16 @@ class AdminWindow(QMainWindow):
         form.addRow("LLM_MODEL", self._api_llm_model)
         form.addRow("LLM_TIMEOUT_SECONDS", self._api_timeout)
         self._api_tools_enabled = QCheckBox("启用")
-        self._api_tools_enabled.setToolTip(
-            "LLM_TOOLS_ENABLED：回复时可调用北京时间与联网搜索工具。默认开。"
-        )
+        self._api_tools_enabled.setToolTip("回复时可查时间和联网搜索。默认开。")
         self._api_web_search = QCheckBox("启用")
-        self._api_web_search.setToolTip(
-            "WEB_SEARCH_ENABLED：允许 web_search（维基→Bing→DuckDuckGo）。"
-            "关则只保留北京时间工具。默认开。"
-        )
+        self._api_web_search.setToolTip("允许联网搜索。关掉则只留北京时间。默认开。")
         form.addRow("LLM_TOOLS_ENABLED", self._api_tools_enabled)
         form.addRow("WEB_SEARCH_ENABLED", self._api_web_search)
         self._api_archive_base = QLineEdit()
         self._api_archive_key = QLineEdit()
         self._api_archive_key.setEchoMode(QLineEdit.EchoMode.Password)
         self._api_archive_key.setPlaceholderText("留空=沿用 LLM_API_KEY / 不改已保存")
-        self._api_archive_key.setToolTip(
-            "留空沿用 LLM_API_KEY / 不改已保存。保存后需在现场页重启闲聊进程。"
-        )
+        self._api_archive_key.setToolTip("留空则沿用对话密钥。保存后需重启闲聊进程。")
         self._api_archive_model = QLineEdit()
         self._api_archive_model.setPlaceholderText("留空=沿用 LLM_MODEL")
         self._api_archive_base.setPlaceholderText("留空=沿用 LLM_BASE_URL")
@@ -926,9 +905,7 @@ class AdminWindow(QMainWindow):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         self._persona_list = QListWidget()
-        self._persona_list.setToolTip(
-            "点选只用来编辑。点「启用」才切换线上口吻。改 txt 后须保存才会写入文件。"
-        )
+        self._persona_list.setToolTip("点选只是编辑；「启用」才换线上口吻。")
         left_layout.addWidget(self._persona_list)
         pack_actions = QHBoxLayout()
         self._btn_new_persona = QPushButton("新建")
@@ -967,7 +944,7 @@ class AdminWindow(QMainWindow):
         split.setStretchFactor(1, 2)
         outer = QVBoxLayout(root)
         outer.setContentsMargins(0, 0, 0, 0)
-        hint = QLabel("支持「导入」或拖放 .txt / .md / .json 到本页。")
+        hint = QLabel("可导入或拖放 .txt / .md / .json。")
         hint.setProperty("role", "muted")
         hint.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         outer.addWidget(hint)
@@ -1035,10 +1012,7 @@ class AdminWindow(QMainWindow):
         from bot.reply_policy import SPEAK_MODE_LABELS, SPEAK_MODES
 
         switches = QGroupBox("回复开关与频率")
-        switches.setToolTip(
-            "写入 reply_policy.toml，保存后下一条消息生效。下方两块可折叠。"
-            "进化开关在「档案 / 进化」。"
-        )
+        switches.setToolTip("保存后下一条消息生效。进化开关在「档案 / 进化」。")
         box = QVBoxLayout(switches)
         self._policy_body = ""
         self._policy_checks: dict[str, QCheckBox] = {}
@@ -1105,9 +1079,7 @@ class AdminWindow(QMainWindow):
         self._policy_speak = QComboBox()
         for mode in SPEAK_MODES:
             self._policy_speak.addItem(SPEAK_MODE_LABELS[mode], mode)
-        self._policy_speak.setToolTip(
-            "自动 / 全部尝试回复 / 仅点名。会话页的按钮写的是同一项。"
-        )
+        self._policy_speak.setToolTip("与会话页的发言模式是同一项。")
         mode_label.setToolTip(self._policy_speak.toolTip())
         self._policy_speak.currentIndexChanged.connect(self._mark_policy_dirty)
         mode_row.addWidget(mode_label)
@@ -1144,15 +1116,11 @@ class AdminWindow(QMainWindow):
         left_layout = QVBoxLayout(left)
         self._imp_search = QLineEdit()
         self._imp_search.setPlaceholderText("按昵称、别名或 person_id 搜索…")
-        self._imp_search.setToolTip(
-            "同一 person_id 跨群共用一份印象。多选后「合并选中」对齐；GUI 无微信号，不按同名自动合并。"
-        )
+        self._imp_search.setToolTip("同一人跨群一份印象。多选后合并到当前高亮项。")
         left_layout.addWidget(self._imp_search)
         self._imp_list = QListWidget()
         self._imp_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
-        self._imp_list.setToolTip(
-            "单击编辑；⌘/Ctrl 或 Shift 多选后点「合并选中」。保留档为当前高亮项。"
-        )
+        self._imp_list.setToolTip("单击编辑。多选后合并到当前高亮项。")
         left_layout.addWidget(self._imp_list)
         imp_actions = QHBoxLayout()
         self._btn_new_imp = QPushButton("新建印象")
@@ -1161,9 +1129,7 @@ class AdminWindow(QMainWindow):
             "JSON（含 user_key）或 .txt（文件名→昵称，正文→印象）；也可拖放到本页。"
         )
         self._btn_merge_imp = QPushButton("合并选中")
-        self._btn_merge_imp.setToolTip(
-            "将其它选中档案并入当前高亮项：正文拼接、别名改挂、删除源档。"
-        )
+        self._btn_merge_imp.setToolTip("并入当前高亮项，并删除源档。")
         self._btn_delete_imp = QPushButton("删除")
         self._btn_delete_imp.setToolTip("删除选中档案的印象文件与全部别名。")
         imp_actions.addWidget(self._btn_new_imp)
@@ -1202,10 +1168,7 @@ class AdminWindow(QMainWindow):
         self._imp_link_nick = QLineEdit()
         self._imp_link_nick.setPlaceholderText("群昵称；私聊可留空")
         self._btn_link_alias = QPushButton("绑定别名到此人")
-        self._btn_link_alias.setToolTip(
-            "把该会话+昵称指向当前 person_id；之后该群入站读写同一份印象。"
-            "若别名已挂在别人身上，会改挂到此人（对方其它别名不动）。"
-        )
+        self._btn_link_alias.setToolTip("把会话和昵称挂到当前人。已挂别人则改挂过来。")
         link_form.addRow("会话名", self._imp_link_chat)
         link_form.addRow("昵称", self._imp_link_nick)
         link_form.addRow(self._btn_link_alias)
@@ -1220,7 +1183,7 @@ class AdminWindow(QMainWindow):
         return root
 
     def _build_transcript_tab(self) -> QWidget:
-        """Browse local listen/reply transcript rings stored in bot.sqlite3."""
+        """Browse local transcripts, with the list and body filling the page."""
         root = QWidget()
         outer = QVBoxLayout(root)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1230,9 +1193,10 @@ class AdminWindow(QMainWindow):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self._transcript_path_label.setProperty("role", "muted")
-        self._transcript_path_label.setToolTip(
-            "环缓冲只读浏览。回复用 context_message_limit 窗口；清空需自行处理 SQLite。"
+        self._transcript_path_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
         )
+        self._transcript_path_label.setToolTip("只读。回复窗口在策略页调整。")
         outer.addWidget(self._transcript_path_label)
         tools = QHBoxLayout()
         self._btn_transcript_refresh = QPushButton("刷新")
@@ -1248,8 +1212,10 @@ class AdminWindow(QMainWindow):
         tools.addStretch(1)
         outer.addLayout(tools)
         split = QSplitter(Qt.Orientation.Horizontal)
+        split.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         left = QWidget()
         left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
         self._transcript_search = QLineEdit()
         self._transcript_search.setPlaceholderText("按会话名筛选…")
         left_layout.addWidget(self._transcript_search)
@@ -1265,7 +1231,7 @@ class AdminWindow(QMainWindow):
         split.addWidget(self._transcript_body)
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 3)
-        outer.addWidget(split)
+        outer.addWidget(split, stretch=1)
         return root
 
     def _build_prompt_evolution_tab(self) -> QWidget:
@@ -1275,19 +1241,14 @@ class AdminWindow(QMainWindow):
         outer.setContentsMargins(0, 0, 0, 0)
         controls = QHBoxLayout()
         self._evo_auto = QCheckBox("自动提案")
-        self._evo_auto.setToolTip(
-            "群聊成功回复或旁听写档后起草本群进化提示词；须批准后才注入。"
-            "不改全局人设。默认关闭。"
-        )
+        self._evo_auto.setToolTip("回复或旁听后起草本群提示词，批准后才生效。")
         controls.addWidget(self._evo_auto)
         controls.addWidget(QLabel("同群最少收到消息数"))
         self._evo_interval = QSpinBox()
         self._evo_interval.setRange(0, 100_000)
         self._evo_interval.setSingleStep(10)
         self._evo_interval.setValue(50)
-        self._evo_interval.setToolTip(
-            "两次提案之间，bot 至少再收到这么多条该群消息；0 表示不限条数（仍受 pending 阻挡）。"
-        )
+        self._evo_interval.setToolTip("两次提案之间至少再收这么多条。0 为不限。")
         controls.addWidget(self._evo_interval)
         self._btn_evo_save_policy = QPushButton("保存开关")
         controls.addWidget(self._btn_evo_save_policy)
@@ -1343,10 +1304,7 @@ class AdminWindow(QMainWindow):
         left_layout.setContentsMargins(0, 0, 0, 0)
         self._culture_search = QLineEdit()
         self._culture_search.setPlaceholderText("按备注名或会话名搜索…")
-        self._culture_search.setToolTip(
-            "成功回复或旁听写档后可自动更新（reply_policy.toml 的 group_culture_auto）。"
-            "只记群梗与风向，不记个人隐私。"
-        )
+        self._culture_search.setToolTip("可自动更新。只记群梗，不记个人隐私。")
         left_layout.addWidget(self._culture_search)
         self._culture_list = QListWidget()
         left_layout.addWidget(self._culture_list)

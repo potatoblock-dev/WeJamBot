@@ -51,10 +51,10 @@ class _SilentSender:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
 
-    def send_bubbles(self, chat: str, text: str) -> list[str]:
+    def send_bubbles(self, chat: str, text: str) -> int:
         """Record and pretend delivery succeeded (should not be called on observe)."""
         self.sent.append((chat, text))
-        return [text]
+        return 1
 
 
 def test_should_observe_excludes_allow_overlap() -> None:

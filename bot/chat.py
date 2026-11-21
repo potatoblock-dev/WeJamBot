@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 from bot.archive_text import OBSERVE_NO_REPLY
@@ -78,6 +79,7 @@ class ChatBot:
         self._transcript = transcript
         self._identity = identity
         # Observe digest: last run time, pending counts, and last digested row id.
+        self._observe_lock = threading.RLock()
         self._observe_last: dict[str, float] = {}
         self._observe_pending: dict[str, int] = {}
         self._observe_watermark: dict[str, int] = {}
@@ -309,116 +311,133 @@ class ChatBot:
         if skip:
             _log.info("skip reply reason=%s text=%r", skip, message.user_text[:80])
             return
-        # History from transcript before appending this inbound turn.
-        message, bridge_history = self._enrich_context_and_media(message)
-        self._append_inbound(message, source="allow")
-        user_text = message.user_text.strip()
-        if not user_text and not message.image_paths:
-            # decide() already reserved cooldown/cap; roll back when capture left nothing.
-            self._gate.abandon_reply_slot()
-            return
-        if message.is_group:
-            user_text = (
-                f"[群友] {message.username}\n{user_text}"
-                if user_text
-                else f"[群友] {message.username}\n（表情）"
-            )
-        _log.info("正在回复 session=%s user=%s", message.session_id, message.username)
-        limit = max(1, self._gate.current().context_message_limit) if self._gate.current().context_message_limit else 0
-        if bridge_history:
-            history = bridge_history[-limit:] if limit else bridge_history
-        elif self._transcript is not None and limit:
-            # Prefer ring after append: drop the just-appended user line from history.
-            full = self._transcript.as_history(message.chat, limit + 1)
-            history = full[:-1] if full else []
-        else:
-            history = list(self._memory.history(message.session_id))
-        history = apply_recent_focus(
-            history, self._gate.current().context_recent_focus
-        )
-        person_id = self._person_id(message)
-        profile = self._impressions.touch(person_id, username=message.username)
-        speaker = str(profile.get("username") or message.username)
-        directory = self._impressions.directory_block(speaker_name=speaker)
-        others = self._impressions.others_block(exclude_key=person_id)
-        culture_text = ""
-        culture_directory = ""
-        other_cultures = ""
-        if self._group_culture is not None:
-            if message.is_group and message.group_id:
-                culture_text = str(
-                    self._group_culture.load(message.group_id).get("culture") or ""
+        slot_open = True
+        try:
+            # History from transcript before appending this inbound turn.
+            message, bridge_history = self._enrich_context_and_media(message)
+            self._append_inbound(message, source="allow")
+            user_text = message.user_text.strip()
+            if not user_text and not message.image_paths:
+                # decide() already reserved cooldown/cap; roll back when capture left nothing.
+                self._gate.abandon_reply_slot()
+                slot_open = False
+                return
+            if message.is_group:
+                user_text = (
+                    f"[群友] {message.username}\n{user_text}"
+                    if user_text
+                    else f"[群友] {message.username}\n（表情）"
                 )
-            culture_directory = self._group_culture.directory_block()
-            other_cultures = self._group_culture.others_block(
-                exclude_chat=message.group_id if message.is_group else ""
+            _log.info("正在回复 session=%s user=%s", message.session_id, message.username)
+            limit = (
+                max(1, self._gate.current().context_message_limit)
+                if self._gate.current().context_message_limit
+                else 0
             )
-        evolution_text = ""
-        if (
-            message.is_group
-            and self._prompt_evolution is not None
-            and message.group_id
-        ):
-            evolution_text = str(
-                self._prompt_evolution.load_active(message.group_id).get("prompt") or ""
+            if bridge_history:
+                history = bridge_history[-limit:] if limit else bridge_history
+            elif self._transcript is not None and limit:
+                # Prefer ring after append: drop the just-appended user line from history.
+                full = self._transcript.as_history(message.chat, limit + 1)
+                history = full[:-1] if full else []
+            else:
+                history = list(self._memory.history(message.session_id))
+            history = apply_recent_focus(
+                history, self._gate.current().context_recent_focus
             )
-        knowledge_text = ""
-        if self._knowledge is not None:
-            knowledge_text = self._knowledge.slices_for(message.user_text)
-        reply = await self._llm.complete(
-            history,
-            user_text,
-            impression=str(profile.get("impression") or ""),
-            directory=directory,
-            others=others,
-            group_culture=culture_text,
-            group_culture_directory=culture_directory,
-            other_group_cultures=other_cultures,
-            knowledge=knowledge_text,
-            prompt_evolution=evolution_text,
-            image_paths=message.image_paths,
-        )
-        reply = strip_sticker_markers(reply)
-        if not reply.strip():
-            _log.warning("empty llm reply session=%s", message.session_id)
-            self._gate.abandon_reply_slot()
-            return
-        if self._sender is None:
-            _log.warning("no sender bound; skipping send session=%s", message.session_id)
-            self._gate.abandon_reply_slot()
-            return
-        _log.info("正在发送 session=%s", message.session_id)
-        delivered = self._sender.send_bubbles(message.chat, reply)
-        if not delivered:
-            _log.warning("reply not delivered session=%s", message.session_id)
-            self._gate.abandon_reply_slot()
-            return
-        self._gate.confirm_reply_slot()
-        now = time.time()
-        self._gate.note_bot_reply(message.session_id, now)
-        policy = self._gate.current()
-        if message.is_group and not is_addressed(message, policy.bot_names):
-            self._gate.note_unmentioned_reply(message.group_id, now)
-        # Fallback copy must not enter memory — it poisons later turns (model
-        # then roleplays 「还是没连上」 even after the API is healthy again).
-        if reply.strip() == LLM_UNAVAILABLE_REPLY:
-            _log.info(
-                "replied with llm-unavailable fallback; skip memory session=%s",
-                message.session_id,
+            person_id = self._person_id(message)
+            profile = self._impressions.touch(person_id, username=message.username)
+            speaker = str(profile.get("username") or message.username)
+            directory = self._impressions.directory_block(speaker_name=speaker)
+            others = self._impressions.others_block(exclude_key=person_id)
+            culture_text = ""
+            culture_directory = ""
+            other_cultures = ""
+            if self._group_culture is not None:
+                if message.is_group and message.group_id:
+                    culture_text = str(
+                        self._group_culture.load(message.group_id).get("culture") or ""
+                    )
+                culture_directory = self._group_culture.directory_block()
+                other_cultures = self._group_culture.others_block(
+                    exclude_chat=message.group_id if message.is_group else ""
+                )
+            evolution_text = ""
+            if (
+                message.is_group
+                and self._prompt_evolution is not None
+                and message.group_id
+            ):
+                evolution_text = str(
+                    self._prompt_evolution.load_active(message.group_id).get("prompt")
+                    or ""
+                )
+            knowledge_text = ""
+            if self._knowledge is not None:
+                knowledge_text = self._knowledge.slices_for(message.user_text)
+            reply = await self._llm.complete(
+                history,
+                user_text,
+                impression=str(profile.get("impression") or ""),
+                directory=directory,
+                others=others,
+                group_culture=culture_text,
+                group_culture_directory=culture_directory,
+                other_group_cultures=other_cultures,
+                knowledge=knowledge_text,
+                prompt_evolution=evolution_text,
+                image_paths=message.image_paths,
             )
-            return
-        self._memory.append(message.session_id, "user", user_text)
-        self._memory.append(message.session_id, "assistant", reply)
-        self._append_bot_reply(message.chat, reply)
-        _log.info("replied session=%s preview=%r", message.session_id, reply[:80])
-        await self._run_archive_writers(
-            message,
-            user_text=user_text,
-            assistant_text=reply,
-            speaker_name=speaker,
-            culture_text=culture_text,
-            write_knowledge=True,
-        )
+            reply = strip_sticker_markers(reply)
+            if not reply.strip():
+                _log.warning("empty llm reply session=%s", message.session_id)
+                self._gate.abandon_reply_slot()
+                slot_open = False
+                return
+            if self._sender is None:
+                _log.warning(
+                    "no sender bound; skipping send session=%s", message.session_id
+                )
+                self._gate.abandon_reply_slot()
+                slot_open = False
+                return
+            _log.info("正在发送 session=%s", message.session_id)
+            sent = self._sender.send_bubbles(message.chat, reply)
+            if sent <= 0:
+                _log.warning("reply not delivered session=%s", message.session_id)
+                self._gate.abandon_reply_slot()
+                slot_open = False
+                return
+            # Any delivered bubble keeps the rate-limit hit (partial send included).
+            self._gate.confirm_reply_slot()
+            slot_open = False
+            # Fallback copy must not open un-@ threads or enter memory.
+            if reply.strip() == LLM_UNAVAILABLE_REPLY:
+                _log.info(
+                    "replied with llm-unavailable fallback; skip memory session=%s",
+                    message.session_id,
+                )
+                return
+            now = time.time()
+            self._gate.note_bot_reply(message.session_id, now)
+            policy = self._gate.current()
+            if message.is_group and not is_addressed(message, policy.bot_names):
+                self._gate.note_unmentioned_reply(message.group_id, now)
+            self._memory.append(message.session_id, "user", user_text)
+            self._memory.append(message.session_id, "assistant", reply)
+            self._append_bot_reply(message.chat, reply)
+            _log.info("replied session=%s preview=%r", message.session_id, reply[:80])
+            await self._run_archive_writers(
+                message,
+                user_text=user_text,
+                assistant_text=reply,
+                speaker_name=speaker,
+                culture_text=culture_text,
+                write_knowledge=True,
+            )
+        finally:
+            if slot_open:
+                self._gate.abandon_reply_slot()
 
     async def observe(self, message: IncomingTurn) -> None:
         """Listen-only: append transcript, batch-digest impression / culture."""
@@ -551,7 +570,8 @@ class ChatBot:
         """Count one inbound line toward the next archive digest for ``key``."""
         if not key:
             return
-        self._observe_pending[key] = self._observe_pending.get(key, 0) + 1
+        with self._observe_lock:
+            self._observe_pending[key] = self._observe_pending.get(key, 0) + 1
 
     def _observe_should_digest(
         self,
@@ -561,29 +581,31 @@ class ChatBot:
         min_messages: int,
     ) -> bool:
         """True when pending lines exist and interval or count threshold is met."""
-        pending = self._observe_pending.get(key, 0)
-        if pending <= 0:
-            return False
-        if interval <= 0:
-            time_ok = True
-        elif key not in self._observe_last:
-            # Never digested: only the message-count path may fire (avoid epoch math).
-            time_ok = False
-        else:
-            time_ok = now - self._observe_last[key] >= interval
-        count_ok = pending >= min_messages
-        return time_ok or count_ok
+        with self._observe_lock:
+            pending = self._observe_pending.get(key, 0)
+            if pending <= 0:
+                return False
+            if interval <= 0:
+                time_ok = True
+            elif key not in self._observe_last:
+                # Never digested: only the message-count path may fire (avoid epoch math).
+                time_ok = False
+            else:
+                time_ok = now - self._observe_last[key] >= interval
+            count_ok = pending >= min_messages
+            return time_ok or count_ok
 
     def _observe_mark_digested(
         self, key: str, now: float, *, digest_rows_max_id: int
     ) -> None:
         """Clear pending count and advance watermark after a digest attempt."""
-        self._observe_pending[key] = 0
-        self._observe_last[key] = now
-        if digest_rows_max_id > 0:
-            self._observe_watermark[key] = max(
-                self._observe_watermark.get(key, 0), digest_rows_max_id
-            )
+        with self._observe_lock:
+            self._observe_pending[key] = 0
+            self._observe_last[key] = now
+            if digest_rows_max_id > 0:
+                self._observe_watermark[key] = max(
+                    self._observe_watermark.get(key, 0), digest_rows_max_id
+                )
 
     def _observe_digest_text(
         self,
@@ -596,7 +618,8 @@ class ChatBot:
         if self._transcript is None:
             body = message.user_text.strip()
             return body, 0
-        after_id = self._observe_watermark.get(key, 0)
+        with self._observe_lock:
+            after_id = self._observe_watermark.get(key, 0)
         if for_impression and message.is_group and message.sender.strip():
             rows = self._transcript.since(
                 message.chat, after_id, sender=message.sender.strip()

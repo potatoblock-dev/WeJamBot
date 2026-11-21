@@ -238,3 +238,32 @@ def test_abandon_reply_slot_frees_min_interval(tmp_path: Path) -> None:
     assert gate.decide(first, now=10.0) is None
     gate.abandon_reply_slot()
     assert gate.decide(_dm("二"), now=11.0) is None
+
+
+def test_cross_thread_abandon_does_not_steal_other_slot(tmp_path: Path) -> None:
+    """Each thread owns its decide() reservation; abandon must not pop another's."""
+    import threading
+
+    path = tmp_path / "reply_policy.toml"
+    path.write_text("min_interval_seconds = 60\n", encoding="utf-8")
+    gate = ReplyGate(path)
+    barrier = threading.Barrier(2)
+    results: dict[str, str | None] = {}
+
+    def worker(name: str, chat: str, stamp: float) -> None:
+        turn = IncomingTurn(chat=chat, sender="", text="hi", chat_type="friend")
+        assert gate.decide(turn, now=stamp) is None
+        barrier.wait()
+        # Peer may abandon/confirm its own slot; ours must still be confirmable.
+        gate.confirm_reply_slot()
+        results[name] = "ok"
+
+    t1 = threading.Thread(target=worker, args=("a", "会话甲", 10.0))
+    t2 = threading.Thread(target=worker, args=("b", "会话乙", 10.0))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    assert results == {"a": "ok", "b": "ok"}
+    assert gate.decide(_dm("丙"), now=40.0) is None
+    gate.abandon_reply_slot()

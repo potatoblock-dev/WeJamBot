@@ -17,7 +17,7 @@
 - **任务**：消息 SoT = **仅** Callus-Bridge GUI `:7701`（个人微信群）。
 - **下一步**：按需收紧 `speak_mode` / 白名单；跨群同人继续人工绑定。
 - **活跃对话**：GUI Callus 接入（bridge）；封禁风险（risk）
-- **近况**：回复 LLM 工具：`get_beijing_time` + `web_search`（`bot/llm/tools.py`，默认开；配置页可关）。
+- **近况**：d27 — Identity 热重载、ReplyGate 线程栈 reservation、部分发送仍 confirm；`make test` 121 passed。
 
 ## 里程碑
 
@@ -58,6 +58,7 @@
 | d24 | 2026-10-30 | 群空 emotion：`speak_mode=auto` 仅在活跃 thread 放行；decide 记账后 enrich/发送失败 `abandon_reply_slot`；`ReadLatest` 按 msg_id/index 对齐，否则只填空 sender/chat_type。 | `bot/reply_policy.py`、`bot/chat.py` |
 | d25 | 2026-11-20 | 跨群印象：同一 `person_id` 读写同一档案；控制台「绑定别名」把 `(群,昵称)` 挂到已有 id；两档已存在则用合并。仍不按同名自动认同人（GUI 无 wxid）。 | `bot/identity/directory.py`、`bot/admin/desktop.py` |
 | d26 | 2026-11-21 | **m1**：以 Callus GUI 为 SoT 的宿主 bot 活体里程碑（旁听/回复/限频/印象/环缓冲）。默认策略可按风险再收紧，勿回退到 openclaw 进群。 | `reply_policy.toml`、`bot/transcript/`、tag `milestone/callus-gui-live-m1` |
+| d27 | 2026-11-21 | Identity `aliases.json` mtime 热重载；ReplyGate reservation 按线程栈；`send_bubbles` 返回已发送数（>0 则 confirm）；LLM 不可用回退不 `note_bot_reply`；observe digest 加锁。 | `bot/identity/directory.py`、`bot/reply_policy.py`、`bot/reply.py`、`bot/chat.py` |
 
 完整决策史见 [decisions.md](./decisions.md)。
 

@@ -588,6 +588,25 @@ def _toml_array_end(text: str, open_bracket: int) -> int:
     return -1
 
 
+class _SlotReservation:
+    """One decide() rate-limit reservation that can be confirmed or abandoned."""
+
+    __slots__ = ("hit_keys", "unat_gid", "unat_prev", "unat_had")
+
+    def __init__(
+        self,
+        hit_keys: list[str],
+        *,
+        unat_gid: str = "",
+        unat_prev: float | None = None,
+        unat_had: bool = False,
+    ) -> None:
+        self.hit_keys = list(hit_keys)
+        self.unat_gid = unat_gid
+        self.unat_prev = unat_prev
+        self.unat_had = unat_had
+
+
 class ReplyGate:
     """Decide whether to reply; re-reads toml when the file mtime changes."""
 
@@ -598,12 +617,9 @@ class ReplyGate:
         self._hits: dict[str, list[float]] = {}
         self._unat_at: dict[str, float] = {}
         self._last_bot_reply: dict[str, float] = {}
-        # Keys / un-@ stamp reserved by the last successful decide(); cleared on
-        # confirm (send) or abandon (enrich/LLM/send aborted with no reply).
-        self._pending_hit_keys: list[str] = []
-        self._pending_unat_gid: str = ""
-        self._pending_unat_prev: float | None = None
-        self._pending_unat_had: bool = False
+        # Per-thread stack of decide() reservations (coalescer runs one session
+        # per thread; cross-session must not clobber a single global pending).
+        self._tls = threading.local()
         self._lock = threading.RLock()
 
     def note_bot_reply(self, session_id: str, now: float | None = None) -> None:
@@ -714,28 +730,38 @@ class ReplyGate:
     def confirm_reply_slot(self) -> None:
         """Keep decide() rate-limit hits after a reply was actually delivered."""
         with self._lock:
-            self._clear_reservation()
+            self._pop_reservation()
 
     def abandon_reply_slot(self) -> None:
         """Undo decide() hits/cooldown when handle aborts before a delivered reply."""
         with self._lock:
-            for key in self._pending_hit_keys:
+            pending = self._pop_reservation()
+            if pending is None:
+                return
+            for key in pending.hit_keys:
                 hits = self._hits.get(key)
                 if hits:
                     hits.pop()
                     if not hits:
                         del self._hits[key]
-            gid = self._pending_unat_gid
+            gid = pending.unat_gid
             if gid:
-                if self._pending_unat_had:
-                    prev = self._pending_unat_prev
+                if pending.unat_had:
+                    prev = pending.unat_prev
                     if prev is None:
                         self._unat_at.pop(gid, None)
                     else:
                         self._unat_at[gid] = prev
                 else:
                     self._unat_at.pop(gid, None)
-            self._clear_reservation()
+
+    def _reservation_stack(self) -> list[_SlotReservation]:
+        """Return this thread's pending decide() reservations."""
+        stack = getattr(self._tls, "stack", None)
+        if stack is None:
+            stack = []
+            self._tls.stack = stack
+        return stack
 
     def _begin_reservation(
         self,
@@ -745,18 +771,22 @@ class ReplyGate:
         unat_prev: float | None = None,
         unat_had: bool = False,
     ) -> None:
-        """Remember which decide() side effects to roll back on abandon."""
-        self._pending_hit_keys = list(hit_keys)
-        self._pending_unat_gid = unat_gid
-        self._pending_unat_prev = unat_prev
-        self._pending_unat_had = unat_had
+        """Push a decide() reservation for this thread (rolled back on abandon)."""
+        self._reservation_stack().append(
+            _SlotReservation(
+                hit_keys,
+                unat_gid=unat_gid,
+                unat_prev=unat_prev,
+                unat_had=unat_had,
+            )
+        )
 
-    def _clear_reservation(self) -> None:
-        """Drop pending reservation metadata without touching hit lists."""
-        self._pending_hit_keys = []
-        self._pending_unat_gid = ""
-        self._pending_unat_prev = None
-        self._pending_unat_had = False
+    def _pop_reservation(self) -> _SlotReservation | None:
+        """Pop this thread's newest reservation, or None when empty."""
+        stack = self._reservation_stack()
+        if not stack:
+            return None
+        return stack.pop()
 
     def _reload_if_changed(self) -> None:
         """Reload toml when it appears or its mtime changes."""

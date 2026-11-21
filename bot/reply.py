@@ -44,11 +44,11 @@ class TextSender:
             return False
         return True
 
-    def send_bubbles(self, chat: str, reply: str) -> bool:
-        """Send each --- split bubble; True only when every bubble succeeds."""
+    def send_bubbles(self, chat: str, reply: str) -> int:
+        """Send each --- split bubble; return how many were delivered (0 = none)."""
         bubbles = split_bubbles(reply)
         if not bubbles:
-            return False
+            return 0
         sent = 0
         for bubble in bubbles:
             if not self.send(chat, bubble):
@@ -58,6 +58,6 @@ class TextSender:
                     sent,
                     len(bubbles),
                 )
-                return False
+                return sent
             sent += 1
-        return True
+        return sent
