@@ -48,6 +48,10 @@ class Settings:
     llm_api_key: str
     llm_model: str
     llm_timeout_seconds: float
+    llm_tools_enabled: bool
+    web_search_enabled: bool
+    web_search_max_results: int
+    llm_tool_max_rounds: int
     archive_llm_base_url: str
     archive_llm_api_key: str
     archive_llm_model: str
@@ -63,6 +67,14 @@ class Settings:
     bot_name: str
     coalesce_burst_seconds: float
     coalesce_debounce_seconds: float
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Parse a boolean env flag (1/true/yes/on vs 0/false/no/off)."""
+    raw = _env(name)
+    if not raw:
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
 
 
 def load_settings() -> Settings:
@@ -82,6 +94,10 @@ def load_settings() -> Settings:
         llm_api_key=llm_key,
         llm_model=llm_model,
         llm_timeout_seconds=_env_float("LLM_TIMEOUT_SECONDS", 25.0),
+        llm_tools_enabled=_env_bool("LLM_TOOLS_ENABLED", True),
+        web_search_enabled=_env_bool("WEB_SEARCH_ENABLED", True),
+        web_search_max_results=max(1, _env_int("WEB_SEARCH_MAX_RESULTS", 5)),
+        llm_tool_max_rounds=max(1, _env_int("LLM_TOOL_MAX_ROUNDS", 3)),
         archive_llm_base_url=archive_base,
         archive_llm_api_key=archive_key,
         archive_llm_model=archive_model,

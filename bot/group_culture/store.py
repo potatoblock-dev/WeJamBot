@@ -87,6 +87,48 @@ class GroupCultureStore:
         chat = str(record.get("chat") or "").strip()
         return chat or "?"
 
+    def filled_records(self) -> list[dict[str, Any]]:
+        """Return culture files that actually have body text."""
+        return [
+            record
+            for record in self.list_records()
+            if str(record.get("culture") or "").strip()
+        ]
+
+    def directory_block(self) -> str:
+        """Compact roster of groups that have a culture note on disk."""
+        filled = self.filled_records()
+        if not filled:
+            return ""
+        lines = [
+            f"【已知群氛围档案】共 {len(filled)} 个群"
+            "（问起某群时按对应档如实说；勿把别群口吻套到本群，也勿否认已有档案。）"
+        ]
+        for record in filled:
+            lines.append(f"- {self.display_label(record)}")
+        return "\n".join(lines)
+
+    def others_block(self, exclude_chat: str = "") -> str:
+        """Full culture bodies for groups other than the current chat."""
+        skip = (exclude_chat or "").strip()
+        chunks: list[str] = []
+        for record in self.filled_records():
+            chat = str(record.get("chat") or "").strip()
+            if skip and chat == skip:
+                continue
+            body = str(record.get("culture") or "").strip()
+            if not body:
+                continue
+            label = self.display_label(record)
+            chunks.append(f"【群氛围·{label}】\n{body}")
+        if not chunks:
+            return ""
+        header = (
+            "【其他群的氛围正文】提起这些群、对比群味时用对应档；"
+            "不要串到本群口吻上，也不要把全文逐字念给群友。"
+        )
+        return header + "\n\n" + "\n\n".join(chunks)
+
 
 def _blank(chat: str) -> dict[str, Any]:
     """Empty culture used until the model or admin writes one."""

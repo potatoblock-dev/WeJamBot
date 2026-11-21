@@ -45,6 +45,27 @@ def normalize_persona_id(raw: str) -> str:
     return ""
 
 
+def suggest_persona_id(raw: str) -> str:
+    """Suggest a folder-safe id from a display title or filename stem.
+
+    Keeps ascii letters/digits/_/- when possible; otherwise ``persona_`` + a
+    short hash so Chinese titles still get an importable default.
+    """
+    text = (raw or "").strip()
+    direct = normalize_persona_id(text)
+    if direct:
+        return direct
+    ascii_bits = re.sub(r"[^a-zA-Z0-9_\-]+", "_", text).strip("_").lower()
+    ascii_bits = re.sub(r"_+", "_", ascii_bits)
+    from_ascii = normalize_persona_id(ascii_bits)
+    if from_ascii:
+        return from_ascii
+    import hashlib
+
+    digest = hashlib.sha1(text.encode("utf-8") or b"persona").hexdigest()[:8]
+    return f"persona_{digest}"
+
+
 def normalize_persona_filename(raw: str) -> str:
     """Return a safe .txt name, or empty if invalid."""
     name = (raw or "").strip().lower()

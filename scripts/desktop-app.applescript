@@ -12,9 +12,13 @@ on run
 		return
 	end try
 	set launcher to projectRoot & "/scripts/admin-launcher.sh"
+	-- admin-launcher maps normal-quit teardown codes to 0; only real launch
+	-- failures should surface an alert here.
 	try
 		do shell script "/bin/bash " & quoted form of launcher without altering line endings
 	on error errMsg number errNum
-		display alert "WeJam 闲聊控制台" message ("启动失败 (" & errNum & "): " & errMsg)
+		if errNum is not 0 then
+			display alert "WeJam 闲聊控制台" message ("启动失败 (" & errNum & "): " & errMsg)
+		end if
 	end try
 end run

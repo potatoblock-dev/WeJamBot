@@ -223,6 +223,148 @@ def upsert_context_message_limit_text(text: str, limit: int) -> str:
     )
 
 
+# Scalar fields the console form edits. Prompt-evolution keys stay on the 进化 page.
+_POLICY_BOOL_KEYS = (
+    "enabled",
+    "c2c",
+    "group",
+    "on_text",
+    "on_image",
+    "on_voice",
+    "group_unmentioned",
+    "unmentioned_need_hook",
+    "unmentioned_off_peak_only",
+    "group_culture_auto",
+    "knowledge_auto",
+)
+_POLICY_INT_KEYS = (
+    "min_interval_seconds",
+    "max_per_session_per_minute",
+    "unmentioned_cooldown_seconds",
+    "unmentioned_thread_minutes",
+    "context_message_limit",
+    "context_recent_focus",
+    "observe_min_interval_seconds",
+    "observe_digest_min_messages",
+    "transcript_max_messages",
+)
+_POLICY_LIST_KEYS = ("require_keywords", "skip_keywords", "bot_names")
+# Loader clamps; the form uses the same floors so a save matches what the bot reads.
+_POLICY_INT_MIN = {
+    "transcript_max_messages": 10,
+    "observe_digest_min_messages": 1,
+}
+
+
+def read_policy_form(text: str) -> dict[str, object]:
+    """Read console form values from a policy body. Missing keys use defaults.
+
+    Invalid toml yields defaults so the form can still open; the caller keeps
+    the original text and only rewrites assignment lines on save.
+    """
+    base = default_settings()
+    data = _toml_dict(text)
+    values: dict[str, object] = {}
+    for key in _POLICY_BOOL_KEYS:
+        values[key] = bool(data[key]) if key in data else bool(getattr(base, key))
+    for key in _POLICY_INT_KEYS:
+        if key in data:
+            values[key] = int(float(data[key]))
+        else:
+            values[key] = int(getattr(base, key))
+    for key in _POLICY_LIST_KEYS:
+        if key in data:
+            values[key] = list(_string_tuple(data.get(key)))
+        else:
+            values[key] = list(getattr(base, key))
+    if "speak_mode" in data:
+        values["speak_mode"] = normalize_speak_mode(data.get("speak_mode"))
+    else:
+        values["speak_mode"] = base.speak_mode
+    return values
+
+
+def apply_policy_form(text: str, values: dict[str, object]) -> str:
+    """Upsert console fields into toml text. Comments and other keys stay."""
+    raw = text or ""
+    for key in _POLICY_BOOL_KEYS:
+        if key not in values:
+            continue
+        raw = upsert_toml_assignment(raw, key, "true" if values[key] else "false")
+    for key in _POLICY_INT_KEYS:
+        if key not in values:
+            continue
+        raw_number = values[key]
+        if isinstance(raw_number, bool) or not isinstance(raw_number, (int, float, str)):
+            number = 0
+        else:
+            number = int(float(raw_number))
+        number = max(_POLICY_INT_MIN.get(key, 0), number)
+        raw = upsert_toml_assignment(raw, key, str(number))
+    for key in _POLICY_LIST_KEYS:
+        if key not in values:
+            continue
+        raw = upsert_toml_assignment(
+            raw, key, _render_inline_string_list(values[key])
+        )
+    if "speak_mode" in values:
+        raw = upsert_speak_mode_text(raw, str(values["speak_mode"]))
+    return raw
+
+
+def upsert_toml_assignment(text: str, key: str, rendered: str) -> str:
+    """Replace one top-level `key = ...` line, or append it.
+
+    The key must match exactly, so `group` does not rewrite `group_unmentioned`.
+    A trailing same-line comment is kept when the value itself contains no `#`.
+    """
+    raw = text or ""
+    pattern = re.compile(rf"(?m)^([ \t]*{re.escape(key)}[ \t]*=[ \t]*)(.*)$")
+    match = pattern.search(raw)
+    if match is None:
+        line = f"{key} = {rendered}"
+        if not raw.strip():
+            return line + "\n"
+        return raw.rstrip() + "\n" + line + "\n"
+    rest = match.group(2)
+    comment = ""
+    hash_at = rest.find(" #")
+    if hash_at >= 0 and "[" not in rest[:hash_at]:
+        comment = rest[hash_at:]
+    return raw[: match.start(2)] + rendered + comment + raw[match.end(2) :]
+
+
+def _render_inline_string_list(value: object) -> str:
+    """Render a one-line TOML string array, escaping quotes and backslashes."""
+    if isinstance(value, str):
+        items = [part.strip() for part in value.replace("，", ",").split(",") if part.strip()]
+    elif isinstance(value, (list, tuple)):
+        items = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        items = []
+    if not items:
+        return "[]"
+    parts: list[str] = []
+    for item in items:
+        escaped = item.replace("\\", "\\\\").replace('"', '\\"')
+        parts.append(f'"{escaped}"')
+    return "[" + ", ".join(parts) + "]"
+
+
+def _toml_dict(text: str) -> dict[str, object]:
+    """Parse toml into a dict. Empty or invalid text yields an empty dict."""
+    raw = text or ""
+    if not raw.strip():
+        return {}
+    try:
+        data = tomllib.loads(raw)
+    except tomllib.TOMLDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
 def upsert_prompt_evolution_auto_text(text: str, enabled: bool) -> str:
     """Replace or append prompt_evolution_auto without dropping comments."""
     flag = "true" if enabled else "false"

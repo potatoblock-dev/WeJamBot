@@ -13,6 +13,8 @@ PUBLIC_KEYS: tuple[str, ...] = (
     "LLM_BASE_URL",
     "LLM_MODEL",
     "LLM_TIMEOUT_SECONDS",
+    "LLM_TOOLS_ENABLED",
+    "WEB_SEARCH_ENABLED",
     "ARCHIVE_LLM_BASE_URL",
     "ARCHIVE_LLM_MODEL",
 )
@@ -26,6 +28,8 @@ ALL_FORM_KEYS: tuple[str, ...] = (
     "LLM_API_KEY",
     "LLM_MODEL",
     "LLM_TIMEOUT_SECONDS",
+    "LLM_TOOLS_ENABLED",
+    "WEB_SEARCH_ENABLED",
     "ARCHIVE_LLM_BASE_URL",
     "ARCHIVE_LLM_API_KEY",
     "ARCHIVE_LLM_MODEL",
@@ -34,6 +38,8 @@ ALL_FORM_KEYS: tuple[str, ...] = (
 OPTIONAL_KEEP_IF_BLANK: frozenset[str] = frozenset(
     {
         "LLM_TIMEOUT_SECONDS",
+        "LLM_TOOLS_ENABLED",
+        "WEB_SEARCH_ENABLED",
         "WEJAM_TARGET",
         "BOT_NAME",
         "ARCHIVE_LLM_BASE_URL",

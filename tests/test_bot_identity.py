@@ -106,3 +106,51 @@ def test_link_alias_reassigns_from_other_person(tmp_path: Path) -> None:
     identity.link_alias(keep, "别群", "白糖")
     assert identity.resolve("别群", "白糖") == keep
     assert identity.resolve("99+", "白糖") == keep
+
+
+def test_merge_multiple_into_one(tmp_path: Path) -> None:
+    """Sequential merges leave every source alias on the kept person_id."""
+    impressions = ImpressionStore(tmp_path / "impressions")
+    identity = IdentityDirectory(tmp_path / "aliases.json", impressions)
+    keep = identity.resolve("99+", "主")
+    a = identity.resolve("群A", "甲")
+    b = identity.resolve("群B", "乙")
+    impressions.save({"user_key": keep, "username": "主", "impression": "主档"})
+    impressions.save({"user_key": a, "username": "甲", "impression": "甲档"})
+    impressions.save({"user_key": b, "username": "乙", "impression": "乙档"})
+    identity.merge(a, keep)
+    identity.merge(b, keep)
+    assert identity.resolve("群A", "甲") == keep
+    assert identity.resolve("群B", "乙") == keep
+    assert identity.resolve("99+", "主") == keep
+    body = str(impressions.load(keep).get("impression") or "")
+    assert "主档" in body and "甲档" in body and "乙档" in body
+    assert not impressions.path_for(a).is_file()
+    assert not impressions.path_for(b).is_file()
+
+
+def test_unlink_alias_keeps_other_aliases(tmp_path: Path) -> None:
+    """unlink_alias drops one row; other aliases and the impression file stay."""
+    impressions = ImpressionStore(tmp_path / "impressions")
+    identity = IdentityDirectory(tmp_path / "aliases.json", impressions)
+    person = identity.resolve("99+", "白糖")
+    identity.link_alias(person, "别群", "白糖")
+    impressions.save({"user_key": person, "username": "白糖", "impression": "还在"})
+    assert identity.unlink_alias("别群", "白糖") is True
+    assert identity.lookup("别群", "白糖") is None
+    assert identity.resolve("99+", "白糖") == person
+    assert impressions.load(person).get("impression") == "还在"
+    assert identity.unlink_alias("别群", "白糖") is False
+
+
+def test_delete_person_removes_aliases_and_file(tmp_path: Path) -> None:
+    """delete_person clears aliases and the impression JSON."""
+    impressions = ImpressionStore(tmp_path / "impressions")
+    identity = IdentityDirectory(tmp_path / "aliases.json", impressions)
+    person = identity.resolve("99+", "白糖")
+    identity.link_alias(person, "别群", "白糖")
+    impressions.save({"user_key": person, "username": "白糖", "impression": "将删"})
+    assert identity.delete_person(person) is True
+    assert identity.lookup("99+", "白糖") is None
+    assert identity.lookup("别群", "白糖") is None
+    assert not impressions.path_for(person).is_file()

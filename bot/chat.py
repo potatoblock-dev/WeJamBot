@@ -342,13 +342,16 @@ class ChatBot:
         directory = self._impressions.directory_block(speaker_name=speaker)
         others = self._impressions.others_block(exclude_key=person_id)
         culture_text = ""
-        if (
-            message.is_group
-            and self._group_culture is not None
-            and message.group_id
-        ):
-            culture_text = str(
-                self._group_culture.load(message.group_id).get("culture") or ""
+        culture_directory = ""
+        other_cultures = ""
+        if self._group_culture is not None:
+            if message.is_group and message.group_id:
+                culture_text = str(
+                    self._group_culture.load(message.group_id).get("culture") or ""
+                )
+            culture_directory = self._group_culture.directory_block()
+            other_cultures = self._group_culture.others_block(
+                exclude_chat=message.group_id if message.is_group else ""
             )
         evolution_text = ""
         if (
@@ -369,6 +372,8 @@ class ChatBot:
             directory=directory,
             others=others,
             group_culture=culture_text,
+            group_culture_directory=culture_directory,
+            other_group_cultures=other_cultures,
             knowledge=knowledge_text,
             prompt_evolution=evolution_text,
             image_paths=message.image_paths,

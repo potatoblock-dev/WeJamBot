@@ -21,6 +21,8 @@ class ChatCompleter(Protocol):
         directory: str = "",
         others: str = "",
         group_culture: str = "",
+        group_culture_directory: str = "",
+        other_group_cultures: str = "",
         knowledge: str = "",
         prompt_evolution: str = "",
         image_paths: list[str] | tuple[str, ...] = (),

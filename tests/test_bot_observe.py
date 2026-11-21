@@ -135,6 +135,36 @@ def test_consume_routes_observe_only(tmp_path: Path) -> None:
     assert observes[0].chat == "旁听群"
 
 
+def test_consume_logs_observe_only_when_reply_mode(caplog) -> None:
+    """Reply mode + observe-only chat logs that it will not reply."""
+    import logging
+
+    eyes = FakeEyes(
+        [
+            SeenMessage(
+                chat="旁听群",
+                sender="乙",
+                text="几点了",
+                chat_type="group",
+                preview=True,
+            ),
+        ]
+    )
+    with caplog.at_level(logging.INFO, logger="bot.runner"):
+        consume_messages(
+            eyes,
+            lambda _t: None,
+            allowed=set(),
+            observe={"旁听群"},
+            observe_submit=lambda _t: None,
+            mode="reply",
+        )
+    assert any(
+        "observe_only" in r.message and "will not reply" in r.message
+        for r in caplog.records
+    )
+
+
 def test_consume_logs_not_listed(caplog, tmp_path: Path) -> None:
     """Inbound chats outside allow/observe leave a not_listed log line."""
     import logging

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
+import time
 
 from bot.admin.docker_control import (
     _resolve_docker_bin,
@@ -12,6 +14,8 @@ from bot.admin.docker_control import (
 
 _CAPTURE_TIMEOUT = 8
 _INPUT_TIMEOUT = 5
+# Match Callus agent/chat.py POPUP_MIN_AREA: ignore tiny tooltips.
+_POPUP_MIN_AREA = 120 * 80
 
 # Runs inside the container. Xlib + Pillow are already in the image.
 _CAPTURE_PY = r"""
@@ -75,6 +79,37 @@ d.sync()
 time.sleep(0.03)
 xtest.fake_input(d, X.KeyRelease, kc)
 d.sync()
+"""
+
+# List viewable top-level windows; extras = non-largest with area >= min_area.
+_EXTRA_WINDOWS_PY = r"""
+import json, sys
+from Xlib import X, display
+
+min_area = int(sys.argv[1])
+d = display.Display()
+root = d.screen().root
+wins = []
+for w in root.query_tree().children:
+    try:
+        if w.get_attributes().map_state != X.IsViewable:
+            continue
+        g = w.get_geometry()
+        if g.width <= 1 or g.height <= 1:
+            continue
+        area = int(g.width) * int(g.height)
+        wins.append({"w": int(g.width), "h": int(g.height), "area": area})
+    except Exception:
+        continue
+if not wins:
+    print(json.dumps({"main_area": 0, "extras": []}))
+    raise SystemExit(0)
+main = max(wins, key=lambda row: row["area"])
+extras = [
+    row for row in wins
+    if row is not main and row["area"] >= min_area
+]
+print(json.dumps({"main_area": main["area"], "extras": extras}))
 """
 
 
@@ -227,11 +262,89 @@ def tap_key(keysym_name: str, *, container: str | None = None) -> str:
     except OSError as exc:
         return f"按键失败：{exc}"
     if proc.returncode != 0:
-        err = proc.stderr.decode("utf-8", "replace").strip().replace("\n", " ")
-        low = err.lower()
-        if "no such container" in low or "is not running" in low:
-            return "容器未开启"
-        if len(err) > 180:
-            err = err[:179] + "…"
-        return err or "按键失败"
+        return _format_docker_err(proc.stderr, "按键失败")
     return ""
+
+
+def extra_popup_count(container: str | None = None) -> tuple[int, str]:
+    """Count non-main X11 windows large enough to be popups.
+
+    Returns ``(count, "")`` on success, or ``(-1, reason)`` on failure.
+    """
+    name = container or session_container_name()
+    try:
+        proc = subprocess.run(
+            [
+                _resolve_docker_bin(),
+                "exec",
+                "-e",
+                "DISPLAY=:77",
+                name,
+                "python3",
+                "-c",
+                _EXTRA_WINDOWS_PY,
+                str(_POPUP_MIN_AREA),
+            ],
+            capture_output=True,
+            timeout=_INPUT_TIMEOUT,
+            env=_subprocess_env(),
+        )
+    except subprocess.TimeoutExpired:
+        return -1, "检测弹层超时"
+    except OSError as exc:
+        return -1, f"检测弹层失败：{exc}"
+    if proc.returncode != 0:
+        return -1, _format_docker_err(proc.stderr, "检测弹层失败")
+    try:
+        data = json.loads(proc.stdout.decode("utf-8", "replace") or "{}")
+    except json.JSONDecodeError:
+        return -1, "检测弹层返回无效 JSON"
+    extras = data.get("extras") if isinstance(data, dict) else None
+    if not isinstance(extras, list):
+        return -1, "检测弹层结果格式错误"
+    return len(extras), ""
+
+
+def dismiss_popups(
+    *,
+    max_rounds: int = 3,
+    settle: float = 0.35,
+    container: str | None = None,
+) -> str:
+    """Press Escape until no large extra windows remain.
+
+    Returns an empty string when clear (or already clear). Otherwise a short
+    Chinese reason for the UI status line.
+    """
+    rounds = max(1, int(max_rounds))
+    pause = max(0.05, float(settle))
+    count, err = extra_popup_count(container=container)
+    if err:
+        return err
+    if count <= 0:
+        return ""
+    for _ in range(rounds):
+        key_err = tap_key("Escape", container=container)
+        if key_err:
+            return key_err
+        time.sleep(pause)
+        count, err = extra_popup_count(container=container)
+        if err:
+            return err
+        if count <= 0:
+            return ""
+    return f"仍有弹层（约 {count} 个），可再点「关闭弹层」或 Esc"
+
+
+def _format_docker_err(stderr: bytes | str, fallback: str) -> str:
+    """Normalize docker/exec stderr into a short UI-facing Chinese message."""
+    if isinstance(stderr, bytes):
+        err = stderr.decode("utf-8", "replace").strip().replace("\n", " ")
+    else:
+        err = (stderr or "").strip().replace("\n", " ")
+    low = err.lower()
+    if "no such container" in low or "is not running" in low:
+        return "容器未开启"
+    if len(err) > 180:
+        err = err[:179] + "…"
+    return err or fallback

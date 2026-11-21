@@ -145,6 +145,14 @@ def consume_messages(
         elif observe_submit is not None and should_observe(
             turn, effective_observe, effective_allow
         ):
+            # Reply mode + observe-only looks "deaf" in the console; spell it out.
+            if current_mode == "reply" and turn.chat not in current_allow:
+                _log.info(
+                    "inbound observe_only (not on allowlist — will not reply) "
+                    "chat=%s preview=%r",
+                    turn.chat,
+                    turn.user_text[:80],
+                )
             observe_submit(turn)
         elif not turn.from_self and (
             turn.text.strip() or turn.image_paths

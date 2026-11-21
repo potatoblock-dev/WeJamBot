@@ -42,6 +42,51 @@ def test_upsert_context_message_limit() -> None:
     assert "# note" in out
 
 
+def test_policy_form_roundtrip_keeps_comments_and_other_keys() -> None:
+    """Labeled form edits rewrite assignment lines and leave comments alone."""
+    from bot.reply_policy import apply_policy_form, read_policy_form
+
+    body = (
+        "# 回复开关\n"
+        "enabled = true\n"
+        "c2c = true\n"
+        "group = true\n"
+        "group_unmentioned = true\n"
+        "group_culture_auto = true\n"
+        "# 同一会话至少间隔 2 分钟才再回一条\n"
+        "min_interval_seconds = 120\n"
+        'speak_mode = "all"\n'
+        'bot_names = ["bot"]\n'
+        "require_keywords = []\n"
+        "prompt_evolution_auto = true\n"
+        "prompt_evolution_min_messages = 50\n"
+    )
+    values = read_policy_form(body)
+    assert values["enabled"] is True
+    assert values["min_interval_seconds"] == 120
+    assert values["speak_mode"] == "all"
+    assert values["bot_names"] == ["bot"]
+    values["enabled"] = False
+    values["group"] = False
+    values["min_interval_seconds"] = 90
+    values["require_keywords"] = ["你好"]
+    values["bot_names"] = ["土豆", "bot"]
+    out = apply_policy_form(body, values)
+    assert "enabled = false" in out
+    assert "group = false" in out
+    assert "group_unmentioned = true" in out
+    assert "group_culture_auto = true" in out
+    assert "min_interval_seconds = 90" in out
+    assert "# 同一会话至少间隔 2 分钟才再回一条" in out
+    assert "prompt_evolution_min_messages = 50" in out
+    assert 'require_keywords = ["你好"]' in out
+    assert 'bot_names = ["土豆", "bot"]' in out
+    again = read_policy_form(out)
+    assert again["group"] is False
+    assert again["require_keywords"] == ["你好"]
+    assert again["bot_names"] == ["土豆", "bot"]
+
+
 def test_skip_group_when_group_off(tmp_path: Path) -> None:
     """Group messages are dropped when group=false."""
     path = tmp_path / "reply_policy.toml"

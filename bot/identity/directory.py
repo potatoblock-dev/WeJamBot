@@ -210,6 +210,41 @@ class IdentityDirectory:
             self._impressions.touch(target, username=name or title)
             return target
 
+    def unlink_alias(self, chat: str, nick: str = "") -> bool:
+        """Remove one ``(chat, nick)`` alias row. Return True when a row was deleted."""
+        title = (chat or "").strip()
+        name = (nick or "").strip()
+        if not title:
+            raise ValueError("unlink_alias requires a chat display name")
+        want = _alias_key(title, name)
+        with self._lock:
+            kept: list[dict[str, str]] = []
+            removed = False
+            for row in self._aliases:
+                if _alias_key(row["chat"], row["nick"]) == want:
+                    removed = True
+                    continue
+                kept.append(row)
+            if not removed:
+                return False
+            self._aliases = kept
+            self._save()
+            return True
+
+    def delete_person(self, person_id: str) -> bool:
+        """Delete all aliases for ``person_id`` and remove its impression file."""
+        target = (person_id or "").strip()
+        if not target:
+            raise ValueError("delete_person requires person_id")
+        with self._lock:
+            before = len(self._aliases)
+            self._aliases = [row for row in self._aliases if row["person_id"] != target]
+            aliases_removed = len(self._aliases) != before
+            if aliases_removed:
+                self._save()
+            file_removed = self._impressions.delete(target)
+            return aliases_removed or file_removed
+
     def merge(self, from_person_id: str, into_person_id: str) -> dict[str, Any]:
         """Merge from_person into into_person: impressions + all aliases."""
         source = (from_person_id or "").strip()

@@ -49,3 +49,43 @@ def test_clear_culture_keeps_chat(tmp_path: Path) -> None:
     record = culture_store.load("测试群")
     assert record["culture"] == ""
     assert record["label"] == "备注"
+
+
+def test_plus_in_chat_title_roundtrips(tmp_path: Path) -> None:
+    """Chat titles with '+' sanitize to a safe filename but still load by title."""
+    culture_store = GroupCultureStore(tmp_path / "group_culture")
+    culture_store.save(
+        {
+            "chat": "99+",
+            "label": "99+",
+            "culture": "二次元手游熟人局",
+            "updated_at": "",
+        }
+    )
+    assert culture_store.path_for("99+").name == "99_.json"
+    record = culture_store.load("99+")
+    assert record["chat"] == "99+"
+    assert "熟人局" in record["culture"]
+
+
+def test_other_group_culture_blocks(tmp_path: Path) -> None:
+    """directory/others expose filled cultures, excluding the current chat."""
+    culture_store = GroupCultureStore(tmp_path / "group_culture")
+    culture_store.save(
+        {"chat": "99+", "label": "99+", "culture": "抽卡吐槽", "updated_at": ""}
+    )
+    culture_store.save(
+        {
+            "chat": "0x02测试",
+            "label": "",
+            "culture": "桥接闲聊",
+            "updated_at": "",
+        }
+    )
+    directory = culture_store.directory_block()
+    assert "99+" in directory
+    assert "0x02测试" in directory
+    others = culture_store.others_block(exclude_chat="0x02测试")
+    assert "抽卡吐槽" in others
+    assert "桥接闲聊" not in others
+    assert "群氛围·99+" in others

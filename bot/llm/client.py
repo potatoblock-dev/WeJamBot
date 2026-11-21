@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import mimetypes
 import threading
@@ -14,6 +15,7 @@ from typing import Any
 import httpx
 
 from bot.config import Settings
+from bot.llm import tools as llm_tools
 from bot.personas.catalog import PersonaCatalog
 from bot.prompt_book import PromptBook
 
@@ -117,6 +119,8 @@ class LLMClient:
         directory: str = "",
         others: str = "",
         group_culture: str = "",
+        group_culture_directory: str = "",
+        other_group_cultures: str = "",
         knowledge: str = "",
         prompt_evolution: str = "",
         image_paths: list[str] | tuple[str, ...] = (),
@@ -135,9 +139,17 @@ class LLMClient:
             directory=directory,
             others=others,
             group_culture=group_culture,
+            group_culture_directory=group_culture_directory,
+            other_group_cultures=other_group_cultures,
             knowledge=knowledge,
             prompt_evolution=prompt_evolution,
         )
+        tool_defs = self._active_tools()
+        if tool_defs:
+            system = (
+                f"{system}\n\n"
+                f"{llm_tools.tools_system_hint(web_search_on=self._settings.web_search_enabled)}"
+            ).strip()
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
         messages.extend(history)
         messages.append(
@@ -148,26 +160,105 @@ class LLMClient:
             "Authorization": f"Bearer {self._settings.llm_api_key}",
             "Content-Type": "application/json",
         }
-        payload: dict[str, Any] = {
+        try:
+            _log.info(
+                "llm request start model=%s messages=%s images=%s tools=%s",
+                self._settings.llm_model,
+                len(messages),
+                len(tuple(image_paths or ())),
+                len(tool_defs),
+            )
+            return await self._complete_with_tools(
+                url, headers, messages, tool_defs
+            )
+        except Exception:
+            _log.exception("llm complete failed")
+            return LLM_UNAVAILABLE_REPLY
+
+    def _active_tools(self) -> list[dict[str, Any]]:
+        """Return tool schemas when LLM tools are enabled in settings."""
+        if not self._settings.llm_tools_enabled:
+            return []
+        return llm_tools.enabled_tool_definitions(
+            web_search_on=self._settings.web_search_enabled
+        )
+
+    async def _complete_with_tools(
+        self,
+        url: str,
+        headers: dict[str, str],
+        messages: list[dict[str, Any]],
+        tool_defs: list[dict[str, Any]],
+    ) -> str:
+        """Run chat completions, executing tool calls for a bounded number of rounds."""
+        max_rounds = self._settings.llm_tool_max_rounds if tool_defs else 1
+        for round_idx in range(max_rounds):
+            payload: dict[str, Any] = {
+                "model": self._settings.llm_model,
+                "messages": messages,
+                "temperature": 0.7,
+                "max_tokens": 400,
+                "thinking": {"type": "disabled"},
+            }
+            if tool_defs:
+                payload["tools"] = tool_defs
+                payload["tool_choice"] = "auto"
+            data = await self._call_api(
+                url, headers, payload, label=f"chat_r{round_idx}"
+            )
+            choice = data["choices"][0]
+            message = choice.get("message") or {}
+            tool_calls = message.get("tool_calls") or []
+            content = message.get("content")
+            text = str(content).strip() if content is not None else ""
+            if tool_defs and tool_calls:
+                assistant_msg: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": content if content is not None else "",
+                    "tool_calls": tool_calls,
+                }
+                messages.append(assistant_msg)
+                for call in tool_calls:
+                    result = await self._execute_tool_call(call)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": str(call.get("id") or ""),
+                            "content": result,
+                        }
+                    )
+                continue
+            return text or "嗯。"
+        # Exhausted tool rounds — ask once more without tools for a final reply.
+        payload = {
             "model": self._settings.llm_model,
             "messages": messages,
             "temperature": 0.7,
             "max_tokens": 400,
             "thinking": {"type": "disabled"},
         }
-        try:
-            _log.info(
-                "llm request start model=%s messages=%s images=%s",
-                self._settings.llm_model,
-                len(messages),
-                len(tuple(image_paths or ())),
-            )
-            data = await self._call_api(url, headers, payload, label="chat")
-            text = str(data["choices"][0]["message"]["content"]).strip()
-            return text or "嗯。"
-        except Exception:
-            _log.exception("llm complete failed")
-            return LLM_UNAVAILABLE_REPLY
+        data = await self._call_api(url, headers, payload, label="chat_final")
+        content = data["choices"][0]["message"].get("content")
+        text = str(content).strip() if content is not None else ""
+        return text or "嗯。"
+
+    async def _execute_tool_call(self, call: dict[str, Any]) -> str:
+        """Run one model tool_call and return a string result for the next turn."""
+        fn = call.get("function") if isinstance(call, dict) else None
+        if not isinstance(fn, dict):
+            return "（工具调用格式无效）"
+        name = str(fn.get("name") or "")
+        args_raw = fn.get("arguments")
+        if isinstance(args_raw, dict):
+            args_json = json.dumps(args_raw, ensure_ascii=False)
+        else:
+            args_json = str(args_raw or "")
+        _log.info("llm tool call name=%s", name)
+        return await llm_tools.run_tool(
+            name,
+            args_json,
+            max_results=self._settings.web_search_max_results,
+        )
 
     async def complete_plain(self, system: str, user_text: str, max_tokens: int = 400) -> str:
         """One-shot completion without chat history (used to rewrite impressions)."""

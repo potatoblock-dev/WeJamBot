@@ -61,8 +61,13 @@ def test_prompt_book_injects_culture_and_knowledge(tmp_path: Path) -> None:
     book = PromptBook(catalog)
     text = book.system_text(
         group_culture="群里爱说名单有正文空",
+        group_culture_directory="【已知群氛围档案】共 2 个群\n- 99+\n- 0x02测试",
+        other_group_cultures="【其他群的氛围正文】\n\n【群氛围·99+】\n抽卡吐槽",
         knowledge="【本地知识库目录】\n- 黑话与梗",
     )
     assert "本群氛围与梗" in text
     assert "名单有正文空" in text
+    assert "已知群氛围档案" in text
+    assert "群氛围·99+" in text
+    assert "抽卡吐槽" in text
     assert "本地知识库" in text

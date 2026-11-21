@@ -24,11 +24,46 @@ QGroupBox::title {
     left: 10px;
     padding: 0 4px;
 }
-QPlainTextEdit, QTextEdit, QLineEdit, QListWidget {
+QPlainTextEdit, QTextEdit, QLineEdit, QListWidget, QTableWidget {
     background-color: #252525;
     color: #e8e8e8;
     border: 1px solid #505050;
     selection-background-color: #555555;
+}
+QHeaderView::section {
+    background-color: #383838;
+    color: #d0d0d0;
+    padding: 4px 8px;
+    border: none;
+    border-right: 1px solid #505050;
+    border-bottom: 1px solid #505050;
+}
+QCheckBox::indicator,
+QTableWidget::indicator,
+QListWidget::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border: 1px solid #8a8a8a;
+    background-color: #1e1e1e;
+}
+QCheckBox::indicator:unchecked:hover,
+QTableWidget::indicator:unchecked:hover,
+QListWidget::indicator:unchecked:hover {
+    border: 1px solid #b0b0b0;
+    background-color: #2a2a2a;
+}
+QCheckBox::indicator:checked,
+QTableWidget::indicator:checked,
+QListWidget::indicator:checked {
+    border: 1px solid #9ec0e8;
+    background-color: #4a7eb5;
+}
+QCheckBox::indicator:checked:hover,
+QTableWidget::indicator:checked:hover,
+QListWidget::indicator:checked:hover {
+    border: 1px solid #b4d0f0;
+    background-color: #5a90c8;
 }
 QTextEdit#logView {
     background-color: #1a1a1a;

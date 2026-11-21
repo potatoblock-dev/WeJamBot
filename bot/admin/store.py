@@ -411,6 +411,16 @@ def link_impression_alias(person_id: str, chat: str, nick: str = "") -> str:
     return _identity_directory().link_alias(person_id, chat, nick)
 
 
+def unlink_impression_alias(chat: str, nick: str = "") -> bool:
+    """Remove one chat+nick alias without deleting the impression file."""
+    return _identity_directory().unlink_alias(chat, nick)
+
+
+def delete_impression_person(person_id: str) -> bool:
+    """Delete one person_id: all aliases plus the impression JSON."""
+    return _identity_directory().delete_person(person_id)
+
+
 def read_allow_chats() -> list[str]:
     """Return allowed WeChat session names."""
     names = load_allow_chats(load_settings().allow_chats_path)

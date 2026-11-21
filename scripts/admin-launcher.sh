@@ -36,11 +36,25 @@ export PYTHONPATH="$ROOT"
 export PATH="${HOME}/.local/bin:/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin:${PATH}"
 log "starting admin desktop"
 
+set +e
 if [[ "$(uname -s)" == "Darwin" && "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" == "1" ]]; then
   arch -arm64 "$PY" -m bot.admin.desktop >>"$LOG" 2>&1
 else
   "$PY" -m bot.admin.desktop >>"$LOG" 2>&1
 fi
 code=$?
+set -e
 log "admin desktop exited code=$code"
-exit "$code"
+# Normal quit should be 0. Qt/gRPC teardown can still SIGABRT (134) after the
+# window closed; AppleScript treats any non-zero as "启动失败" — map those away.
+case "$code" in
+  0|130|143) exit 0 ;;
+  134|139)
+    log "treating teardown signal $code as clean quit for .app wrapper"
+    exit 0
+    ;;
+  *)
+    alert "控制台异常退出 (code=$code)。详见 data/admin-desktop.log"
+    exit "$code"
+    ;;
+esac
