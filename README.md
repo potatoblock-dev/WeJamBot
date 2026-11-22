@@ -1,6 +1,8 @@
 # WeJamBot（0x02）
 
-微信侧产品仓：**0x01 文本闲聊脑 + WeJam 眼睛/手**。上游驱动仍见 [Potatoblock-Dev/WeJamBot](https://github.com/Potatoblock-Dev/WeJamBot)；QQ 官方机器人脑仍是 [baitang-bt/0x01](https://github.com/baitang-bt/0x01)。本仓推送到 [Potatoblock-Dev/WeJambBot_0x02](https://github.com/Potatoblock-Dev/WeJambBot_0x02)。
+> **一体交付 / 安装请用** → [potatoblock-dev/0x02](https://github.com/potatoblock-dev/0x02)（`bridge/` + `host/` 一体仓，部署说明以该 README 为准）。
+
+微信侧产品仓：**0x01 文本闲聊脑 + WeJam 眼睛/手**。上游驱动仍见 [Potatoblock-Dev/WeJamBot](https://github.com/Potatoblock-Dev/WeJamBot)；QQ 官方机器人脑仍是 [baitang-bt/0x01](https://github.com/baitang-bt/0x01)。本仓镜像推送到 [Potatoblock-Dev/WeJambBot_0x02](https://github.com/Potatoblock-Dev/WeJambBot_0x02)。
 
 闲聊脑跑在宿主。消息桥经 **gRPC `wejam.v1`**，**日常唯一路径 = Callus-Bridge GUI**（`:7701`，真个人号，可进个人微信群）。
 openclaw（`:7702`）与遗留 WeJam（`:7700`）仅归档，不作运行默认。
