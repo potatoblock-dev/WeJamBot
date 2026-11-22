@@ -674,13 +674,22 @@ class ReplyGate:
                 return "c2c_off"
             user_text = message.user_text
             content_type = (message.content_type or "text").strip().lower() or "text"
-            has_media = bool(message.image_paths) or content_type != "text"
-            if not user_text.strip() and not has_media:
-                return "kind_off"
-            if user_text.strip() and not policy.on_text:
-                return "kind_off"
-            if not user_text.strip() and has_media and not policy.on_image:
-                return "kind_off"
+            # Voice is gated by on_voice; empty/placeholder STT never reaches the LLM.
+            if content_type == "voice":
+                if not policy.on_voice:
+                    return "kind_off"
+                if _is_empty_voice_body(message):
+                    return "voice_empty"
+                if not policy.on_text:
+                    return "kind_off"
+            else:
+                has_media = bool(message.image_paths) or content_type != "text"
+                if not user_text.strip() and not has_media:
+                    return "kind_off"
+                if user_text.strip() and not policy.on_text:
+                    return "kind_off"
+                if not user_text.strip() and has_media and not policy.on_image:
+                    return "kind_off"
             if (
                 policy.require_keywords
                 and user_text.strip()
@@ -697,8 +706,18 @@ class ReplyGate:
                 reason = self._rate_limit(message.session_id, policy, stamp)
                 if reason:
                     return reason
-                self._begin_reservation(hit_keys=[message.session_id])
-                self._record_hit(message.session_id, stamp)
+                # One WeChat line can arrive twice: preview with empty sender
+                # (session=chat) then again with nickname (session=chat:nick).
+                # Session cooldown alone cannot stop that double reply.
+                hit_keys = [message.session_id]
+                dup = self._duplicate_inbound(message, policy, stamp)
+                if dup is not None:
+                    return dup
+                hit_keys.extend(self._dedupe_keys(message))
+                self._begin_reservation(hit_keys=hit_keys)
+                for key in hit_keys:
+                    if key:
+                        self._record_hit(key, stamp)
                 return None
             mode = normalize_speak_mode(policy.speak_mode)
             if mode == SPEAK_MENTION_QUOTE:
@@ -827,6 +846,38 @@ class ReplyGate:
         hits = self._hits.setdefault(session_id, [])
         hits.append(now)
 
+    def _dedupe_window(self, policy: ReplySettings) -> float:
+        """Seconds to treat a second Watch/preview of the same chat line as a duplicate."""
+        # Long enough to cover preview→full re-delivery; short enough for two real @s.
+        return min(30.0, max(8.0, float(policy.min_interval_seconds) * 0.25))
+
+    def _dedupe_keys(self, message: IncomingTurn) -> list[str]:
+        """Keys that identify the same inbound across empty/filled sender splits."""
+        keys: list[str] = []
+        chat = message.chat.strip()
+        if chat:
+            keys.append(f"chat:{chat}")
+        mid = (message.msg_id or "").strip()
+        if mid:
+            keys.append(f"msgid:{mid}")
+        return keys
+
+    def _interval_hit(self, key: str, now: float, window: float) -> bool:
+        """True when *key* was recorded within *window* seconds."""
+        hits = [t for t in self._hits.get(key, []) if now - t < max(window, 60.0)]
+        self._hits[key] = hits
+        return bool(hits and now - hits[-1] < window)
+
+    def _duplicate_inbound(
+        self, message: IncomingTurn, policy: ReplySettings, now: float
+    ) -> str | None:
+        """Skip when the same chat line is already being answered under another session_id."""
+        window = self._dedupe_window(policy)
+        for key in self._dedupe_keys(message):
+            if self._interval_hit(key, now, window):
+                return "dup_inbound"
+        return None
+
 
 def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
     """True if any keyword appears in text (case-insensitive)."""
@@ -860,11 +911,25 @@ def _looks_like_group_broadcast(text: str) -> bool:
     return False
 
 
+_VOICE_PLACEHOLDERS = frozenset({"", "[语音]", "[消息]"})
+
+
+def _is_empty_voice_body(message: IncomingTurn) -> bool:
+    """True when voice STT left only a placeholder or blank body."""
+    raw = (message.text or "").strip()
+    if raw in _VOICE_PLACEHOLDERS:
+        return True
+    return message.user_text.strip() in _VOICE_PLACEHOLDERS
+
+
 def is_addressed(message: IncomingTurn, names: tuple[str, ...]) -> bool:
-    """Private chats always count as addressed; groups need a bot name in the text."""
+    """Private chats always count as addressed; groups need a bot name in the text.
+
+    Use the current bubble body only — quoted cite text must not count as @.
+    """
     if not message.is_group:
         return True
-    return _mentions_bot_name(message.user_text, names)
+    return _mentions_bot_name(message.text, names)
 
 
 def _has_media_body(message: IncomingTurn) -> bool:

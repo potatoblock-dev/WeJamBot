@@ -236,6 +236,8 @@ def _seen_message(message: object, *, chat_type: str = "", unread: int = 0) -> S
         index=int(getattr(message, "index", 0) or 0),
         stable_id=str(getattr(message, "stable_id", "") or ""),
         attachments=attachments,
+        quote_text=str(getattr(message, "quote_text", "") or "").strip(),
+        quote_sender=str(getattr(message, "quote_sender", "") or "").strip(),
     )
 
 
@@ -254,7 +256,12 @@ def _messages_from_event(event: object) -> Iterator[SeenMessage]:
             continue
         seen = _seen_message(message, unread=unread)
         content_type = (seen.content_type or "text").strip().lower() or "text"
-        if not seen.text and content_type == "text" and not seen.attachments:
+        if (
+            not seen.text
+            and not seen.quote_text
+            and content_type == "text"
+            and not seen.attachments
+        ):
             continue
         msg_chat = seen.chat or chat
         yield SeenMessage(
@@ -270,4 +277,6 @@ def _messages_from_event(event: object) -> Iterator[SeenMessage]:
             index=seen.index,
             stable_id=seen.stable_id,
             attachments=seen.attachments,
+            quote_text=seen.quote_text,
+            quote_sender=seen.quote_sender,
         )

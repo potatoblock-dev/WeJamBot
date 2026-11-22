@@ -144,6 +144,8 @@ class ChatBot:
                 content_type=message.content_type,
                 index=message.index,
                 image_paths=message.image_paths,
+                quote_text=message.quote_text,
+                quote_sender=message.quote_sender,
             )
         sender = latest.sender or message.sender
         content_type = (
@@ -155,11 +157,30 @@ class ChatBot:
         if latest.attachments:
             image_paths = [a.path for a in latest.attachments if a.path]
         chat_type = bridge_type or message.chat_type
+        # Prefer full bubble text from ReadLatest (preview watch often truncates quotes).
+        text = (latest.text or "").strip() or message.text
+        quote_text = (
+            str(getattr(latest, "quote_text", "") or "").strip() or message.quote_text
+        )
+        quote_sender = (
+            str(getattr(latest, "quote_sender", "") or "").strip()
+            or message.quote_sender
+        )
+        if not quote_text:
+            from bot.quote_parse import parse_quote_message
+
+            parts = parse_quote_message(latest.text) or parse_quote_message(text)
+            if parts is not None:
+                content_type = "quote"
+                quote_text = parts.quote_text
+                quote_sender = parts.quote_sender or quote_sender
+                if parts.body.strip():
+                    text = parts.body.strip()
         return IncomingTurn(
             chat=message.chat,
             sender=sender,
-            text=message.text,
-            preview_only=message.preview_only,
+            text=text,
+            preview_only=False,
             from_self=message.from_self,
             chat_type=chat_type,
             msg_id=message.msg_id or (latest.message_id or ""),
@@ -167,6 +188,78 @@ class ChatBot:
             content_type=content_type,
             index=index,
             image_paths=tuple(image_paths),
+            quote_text=quote_text,
+            quote_sender=quote_sender,
+        )
+
+    def _enrich_quote_context(self, message: IncomingTurn) -> IncomingTurn:
+        """Fill missing quote cite from ReadLatest / near context when body is thin.
+
+        Linux WeChat a11y often omits the grey citation block; when the user only
+        sends ``@bot`` while quoting, recover the prior inbound line as a weak cite.
+        """
+        if message.quote_text.strip():
+            return message
+        thin = not message.body_without_mentions()
+        wants = thin or message.preview_only or message.quotes_bot
+        if not wants:
+            return message
+        # Prefer local transcript: previous non-self line in this chat.
+        prior = ""
+        prior_sender = ""
+        if self._transcript is not None:
+            rows = self._transcript.recent(message.chat, 8)
+            # Include all prior rows; the thin @ bubble may not be appended yet.
+            for row in reversed(rows):
+                if getattr(row, "from_self", False):
+                    continue
+                body = str(getattr(row, "text", "") or "").strip()
+                if not body:
+                    continue
+                prior = body
+                prior_sender = str(getattr(row, "sender", "") or "").strip()
+                break
+        eyes = self._eyes
+        if not prior and eyes is not None:
+            read_context = getattr(eyes, "read_context", None)
+            if callable(read_context):
+                try:
+                    rows = read_context(message.chat, limit=5)
+                except HandsError as exc:
+                    _log.info("quote fallback read_context skipped: %s", exc)
+                    rows = []
+                for row in reversed(list(rows)[:-1] if rows else []):
+                    if row.from_self:
+                        continue
+                    body = (row.text or "").strip()
+                    if not body:
+                        continue
+                    prior = body
+                    prior_sender = (row.sender or "").strip()
+                    break
+        if not prior:
+            return message
+        _log.info(
+            "quote_fallback=context chat=%s cite=%r",
+            message.chat[:40],
+            prior[:60],
+        )
+        return IncomingTurn(
+            chat=message.chat,
+            sender=message.sender,
+            text=message.text,
+            preview_only=message.preview_only,
+            from_self=message.from_self,
+            chat_type=message.chat_type,
+            msg_id=message.msg_id,
+            unread=message.unread,
+            content_type="quote"
+            if (message.content_type or "") == "quote"
+            else message.content_type,
+            index=message.index,
+            image_paths=message.image_paths,
+            quote_text=prior,
+            quote_sender=prior_sender or message.sender,
         )
 
     def _person_id(self, message: IncomingTurn) -> str:
@@ -291,12 +384,15 @@ class ChatBot:
             content_type=content_type,
             index=index,
             image_paths=tuple(image_paths),
+            quote_text=message.quote_text,
+            quote_sender=message.quote_sender,
         )
         return enriched, extra_history
 
     async def handle(self, message: IncomingTurn) -> None:
         """Run policy, LLM, send, then refresh impression / group culture / knowledge."""
         message = self._enrich_identity(message)
+        message = self._enrich_quote_context(message)
         _log.info(
             "inbound group=%s chat=%s nick=%s preview=%s text=%r",
             message.is_group,
@@ -442,6 +538,7 @@ class ChatBot:
     async def observe(self, message: IncomingTurn) -> None:
         """Listen-only: append transcript, batch-digest impression / culture."""
         message = self._enrich_identity(message)
+        message = self._enrich_quote_context(message)
         _log.info(
             "observe group=%s chat=%s nick=%s text=%r",
             message.is_group,

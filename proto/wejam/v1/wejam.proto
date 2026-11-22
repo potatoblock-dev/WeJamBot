@@ -175,6 +175,9 @@ message Message {
   repeated MediaAttachment attachments = 11;
   // 预留稳定身份；界面无 wxid 时为空。
   string stable_id = 12;
+  // 引用/回复气泡：被引正文与被引发送者（无引用时为空；旧宿主忽略）。
+  string quote_text = 13;
+  string quote_sender = 14;
 }
 
 // 本地落盘的媒体引用（路径相对 CALLUS_MEDIA_DIR 或绝对路径）。

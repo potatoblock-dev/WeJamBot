@@ -187,6 +187,119 @@ def test_decide_rejects_empty_emotion_when_on_image_off(tmp_path: Path) -> None:
     assert gate.decide(empty_emo, now=1.0) == "kind_off"
 
 
+def test_decide_dedupes_same_chat_when_sender_fills_in(tmp_path: Path) -> None:
+    """Preview (empty sender) then full (nickname) must not double-reply.
+
+    Watch can deliver one WeChat line under session ``chat`` then ``chat:nick``;
+    both look @-addressed, so session min_interval alone does not stop the second.
+    """
+    path = tmp_path / "reply_policy.toml"
+    path.write_text(
+        "on_text = true\nmin_interval_seconds = 90\n"
+        'bot_names = ["0x02"]\n',
+        encoding="utf-8",
+    )
+    gate = ReplyGate(path)
+    first = IncomingTurn(
+        chat="0x02测试",
+        sender="",
+        text="@0x02 你能@我吗",
+        chat_type="group",
+        msg_id="abc111",
+    )
+    second = IncomingTurn(
+        chat="0x02测试",
+        sender="白糖",
+        text="@0x02 你能@我吗",
+        chat_type="group",
+        msg_id="abc222",
+    )
+    assert first.session_id == "0x02测试"
+    assert second.session_id == "0x02测试:白糖"
+    assert gate.decide(first, now=100.0) is None
+    assert gate.decide(second, now=108.0) == "dup_inbound"
+
+
+def test_decide_dedupes_same_msg_id(tmp_path: Path) -> None:
+    """Identical bridge message ids are skipped even across session keys."""
+    path = tmp_path / "reply_policy.toml"
+    path.write_text(
+        "on_text = true\nmin_interval_seconds = 90\n"
+        'bot_names = ["0x02"]\n',
+        encoding="utf-8",
+    )
+    gate = ReplyGate(path)
+    a = IncomingTurn(
+        chat="0x02测试",
+        sender="",
+        text="@0x02 hi",
+        chat_type="group",
+        msg_id="same-id",
+    )
+    b = IncomingTurn(
+        chat="0x02测试",
+        sender="白糖",
+        text="@0x02 hi",
+        chat_type="group",
+        msg_id="same-id",
+    )
+    assert gate.decide(a, now=1.0) is None
+    assert gate.decide(b, now=2.0) == "dup_inbound"
+
+
+def test_decide_rejects_voice_when_on_voice_off(tmp_path: Path) -> None:
+    """Voice turns respect on_voice=false even with a transcript."""
+    path = tmp_path / "reply_policy.toml"
+    path.write_text("on_voice = false\non_text = true\n", encoding="utf-8")
+    gate = ReplyGate(path)
+    turn = IncomingTurn(
+        chat="文件传输助手",
+        sender="",
+        text="转写出来的话",
+        chat_type="friend",
+        content_type="voice",
+    )
+    assert gate.decide(turn, now=1.0) == "kind_off"
+
+
+def test_decide_rejects_empty_voice_transcript(tmp_path: Path) -> None:
+    """Placeholder / blank voice STT is skipped as voice_empty."""
+    path = tmp_path / "reply_policy.toml"
+    path.write_text("on_voice = true\non_text = true\n", encoding="utf-8")
+    gate = ReplyGate(path)
+    placeholder = IncomingTurn(
+        chat="文件传输助手",
+        sender="",
+        text="[语音]",
+        chat_type="friend",
+        content_type="voice",
+    )
+    blank = IncomingTurn(
+        chat="文件传输助手",
+        sender="",
+        text="",
+        chat_type="friend",
+        content_type="voice",
+    )
+    assert gate.decide(placeholder, now=1.0) == "voice_empty"
+    assert gate.decide(blank, now=30.0) == "voice_empty"
+
+
+def test_decide_allows_voice_with_transcript(tmp_path: Path) -> None:
+    """Voice with real STT text is allowed when on_voice and on_text are on."""
+    path = tmp_path / "reply_policy.toml"
+    path.write_text("on_voice = true\non_text = true\n", encoding="utf-8")
+    gate = ReplyGate(path)
+    turn = IncomingTurn(
+        chat="文件传输助手",
+        sender="",
+        text="你好，这是语音转写",
+        chat_type="friend",
+        content_type="voice",
+    )
+    assert gate.decide(turn, now=1.0) is None
+
+
 def test_group_empty_emotion_auto_needs_active_thread(tmp_path: Path) -> None:
     """speak_mode=auto: empty group sticker is unmentioned_no_hook without a thread."""
     path = tmp_path / "reply_policy.toml"

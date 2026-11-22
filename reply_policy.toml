@@ -7,7 +7,7 @@ group = true
 
 on_text = true
 on_image = false
-on_voice = false
+on_voice = true
 
 # 同一会话至少间隔 2 分钟才再回一条
 min_interval_seconds = 90

@@ -76,6 +76,8 @@ class SeenMessage:
     index: int = 0
     stable_id: str = ""
     attachments: tuple[MediaAttachment, ...] = field(default_factory=tuple)
+    quote_text: str = ""
+    quote_sender: str = ""
 
 
 @dataclass(frozen=True)

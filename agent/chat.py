@@ -270,6 +270,22 @@ def list_messages(chat="", limit=0):
                 cand = first.strip()
                 if is_plausible_sender_name(cand) and rest.strip():
                     sender, text = cand, rest.strip()
+        quote_text = ""
+        quote_sender = ""
+        content_type = "system"
+        if kind == "TEXT":
+            from .quote_parse import parse_quote_message
+
+            # Prefer full list-item raw (may include cite chrome stripped from text).
+            parts = parse_quote_message(raw) or parse_quote_message(text)
+            if parts is not None:
+                content_type = "quote"
+                quote_text = parts.quote_text
+                quote_sender = parts.quote_sender
+                if parts.body.strip():
+                    text = parts.body.strip()
+            else:
+                content_type = classify_content(text)
         # ID 刻意不用序号：序号会随列表滚动而漂移，导致「全部变成新消息」。
         # 用 会话+时间桶+正文+桶内出现次数，窗口不变时保持稳定。
         key = (bucket, text)
@@ -280,7 +296,9 @@ def list_messages(chat="", limit=0):
             "id": mid, "chat": chat, "sender": sender, "text": text,
             "time_text": raw.strip() if kind == "TIME" else "",
             "kind": kind, "index": idx,
-            "content_type": classify_content(text) if kind == "TEXT" else "system",
+            "content_type": content_type,
+            "quote_text": quote_text,
+            "quote_sender": quote_sender,
         })
     return chat, messages
 

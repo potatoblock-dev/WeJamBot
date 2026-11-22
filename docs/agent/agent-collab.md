@@ -17,7 +17,7 @@
 - **任务**：消息 SoT = **仅** Callus-Bridge GUI `:7701`（个人微信群）。
 - **下一步**：按需收紧 `speak_mode` / 白名单；跨群同人继续人工绑定。
 - **活跃对话**：GUI Callus 接入（bridge）；封禁风险（risk）
-- **近况**：d27 — Identity 热重载、ReplyGate 线程栈 reservation、部分发送仍 confirm；`make test` 121 passed。
+- **近况**：d28 引用消息解析+宿主注入；archive tag `archive/console-tools-culture-2026-11-21` 已推 origin。
 
 ## 里程碑
 
@@ -59,6 +59,7 @@
 | d25 | 2026-11-20 | 跨群印象：同一 `person_id` 读写同一档案；控制台「绑定别名」把 `(群,昵称)` 挂到已有 id；两档已存在则用合并。仍不按同名自动认同人（GUI 无 wxid）。 | `bot/identity/directory.py`、`bot/admin/desktop.py` |
 | d26 | 2026-11-21 | **m1**：以 Callus GUI 为 SoT 的宿主 bot 活体里程碑（旁听/回复/限频/印象/环缓冲）。默认策略可按风险再收紧，勿回退到 openclaw 进群。 | `reply_policy.toml`、`bot/transcript/`、tag `milestone/callus-gui-live-m1` |
 | d27 | 2026-11-21 | Identity `aliases.json` mtime 热重载；ReplyGate reservation 按线程栈；`send_bubbles` 返回已发送数（>0 则 confirm）；LLM 不可用回退不 `note_bot_reply`；observe digest 加锁。 | `bot/identity/directory.py`、`bot/reply_policy.py`、`bot/reply.py`、`bot/chat.py` |
+| d28 | 2026-11-21 | 引用消息：`quote_text`/`quote_sender` 协议字段；桥侧 `parse_quote_message`；宿主 `user_text` 注入引用块；`_apply_latest` 合并全文；Linux a11y 无引用段时 transcript/ReadContext 弱兜底。 | `bot/quote_parse.py`、`bot/channel.py`、`bot/chat.py`、`../Callus-Bridge/agent/` |
 
 完整决策史见 [decisions.md](./decisions.md)。
 
