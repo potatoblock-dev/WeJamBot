@@ -172,6 +172,47 @@ def test_decide_allows_empty_emotion_when_on_image(tmp_path: Path) -> None:
     assert gate.decide(with_paths, now=30.0) is None
 
 
+def test_decide_rejects_image_when_on_image_off(tmp_path: Path) -> None:
+    """Image turns respect on_image=false."""
+    path = tmp_path / "reply_policy.toml"
+    path.write_text("on_image = false\n", encoding="utf-8")
+    gate = ReplyGate(path)
+    turn = IncomingTurn(
+        chat="文件传输助手",
+        sender="",
+        text="[图片]",
+        chat_type="friend",
+        content_type="image",
+        image_paths=("/tmp/x.png",),
+    )
+    assert gate.decide(turn, now=1.0) == "kind_off"
+
+
+def test_is_empty_image_turn() -> None:
+    """Placeholder image/emotion without paths is empty; attached paths are not."""
+    from bot.reply_policy import is_empty_image_turn
+
+    empty = IncomingTurn(
+        chat="c",
+        sender="",
+        text="[图片]",
+        chat_type="friend",
+        content_type="image",
+    )
+    filled = IncomingTurn(
+        chat="c",
+        sender="",
+        text="[图片]",
+        chat_type="friend",
+        content_type="image",
+        image_paths=("/tmp/x.png",),
+    )
+    text = IncomingTurn(chat="c", sender="", text="hi", chat_type="friend")
+    assert is_empty_image_turn(empty) is True
+    assert is_empty_image_turn(filled) is False
+    assert is_empty_image_turn(text) is False
+
+
 def test_decide_rejects_empty_emotion_when_on_image_off(tmp_path: Path) -> None:
     """Media-only turns respect on_image=false."""
     path = tmp_path / "reply_policy.toml"

@@ -6,7 +6,7 @@ c2c = true
 group = true
 
 on_text = true
-on_image = false
+on_image = true
 on_voice = true
 
 # 同一会话至少间隔 2 分钟才再回一条

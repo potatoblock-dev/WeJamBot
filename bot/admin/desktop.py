@@ -103,12 +103,14 @@ class _DockerPowerWorker(QObject):
         self._action = action
 
     def run(self) -> None:
-        """Execute container start/stop or open Docker Desktop."""
+        """Execute container start/stop/restart or open Docker Desktop."""
         try:
             if self._action == "start":
                 store.start_wejam_container()
             elif self._action == "stop":
                 store.stop_wejam_container()
+            elif self._action == "restart":
+                store.restart_wejam_container()
             else:
                 store.open_docker_app()
             self.finished.emit(None)
@@ -683,10 +685,15 @@ class AdminWindow(QMainWindow):
         self._btn_docker_toggle.setToolTip(
             "复用已有容器与数据卷（不删容器），保留登录态。"
         )
+        self._btn_docker_restart = QPushButton("重启容器")
+        self._btn_docker_restart.setToolTip(
+            "docker restart 当前会话容器，并等到 gRPC 就绪（保留登录卷）。"
+        )
         self._btn_docker_open = QPushButton("打开 Docker Desktop")
         self._btn_wechat_view = QPushButton("打开画面")
         self._btn_wechat_view.setToolTip("交互容器内微信画面。")
         docker_row.addWidget(self._btn_docker_toggle)
+        docker_row.addWidget(self._btn_docker_restart)
         docker_row.addWidget(self._btn_docker_open)
         docker_row.addWidget(self._btn_wechat_view)
         docker_row.addStretch()
@@ -905,7 +912,9 @@ class AdminWindow(QMainWindow):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         self._persona_list = QListWidget()
-        self._persona_list.setToolTip("点选只是编辑；「启用」才换线上口吻。")
+        self._persona_list.setToolTip(
+            "点选编辑正文。双击改显示名、id 和别名。「启用」才换线上口吻。"
+        )
         left_layout.addWidget(self._persona_list)
         pack_actions = QHBoxLayout()
         self._btn_new_persona = QPushButton("新建")
@@ -1351,6 +1360,7 @@ class AdminWindow(QMainWindow):
         self._btn_mode.clicked.connect(self.on_toggle_bot_mode)
         self._btn_refresh.clicked.connect(lambda: self.refresh_status(refresh_docker=True))
         self._btn_docker_toggle.clicked.connect(self.on_toggle_docker)
+        self._btn_docker_restart.clicked.connect(lambda: self._docker_power("restart"))
         self._btn_docker_open.clicked.connect(lambda: self._docker_power("open"))
         self._btn_wechat_view.clicked.connect(self._open_wechat_view)
         self._btn_log.clicked.connect(self.refresh_logs)
@@ -1382,6 +1392,7 @@ class AdminWindow(QMainWindow):
         self._btn_add_persona_file.clicked.connect(self.on_add_persona_file)
         self._btn_save_persona_file.clicked.connect(self.on_save_persona_file)
         self._persona_list.currentItemChanged.connect(self.on_persona_selected)
+        self._persona_list.itemDoubleClicked.connect(self.on_persona_double_clicked)
         self._persona_file_combo.currentTextChanged.connect(self.on_persona_file_changed)
         self._persona_editor.textChanged.connect(self._mark_persona_dirty)
         self._btn_save_policy.clicked.connect(self.on_save_policy)
@@ -1471,6 +1482,9 @@ class AdminWindow(QMainWindow):
             "停止容器" if docker.container_running else "启动容器"
         )
         self._btn_docker_toggle.setEnabled(not busy and docker.daemon_ok)
+        self._btn_docker_restart.setEnabled(
+            not busy and docker.daemon_ok and docker.container_running
+        )
         self._btn_docker_open.setEnabled(not busy)
         view = wejam_status.probe(snap.wejam_target)
         if view.reachable:
@@ -1506,6 +1520,14 @@ class AdminWindow(QMainWindow):
         self._last_login_phase = view.phase
         self._login_poll_tick += 1
         if not logged_in:
+            # Auto-pull QR when entering a scan-related phase, or when the panel
+            # is visible but still has no pixmap (e.g. after container restart).
+            needs_qr = wejam_status.login_phase_wants_qr(view.phase)
+            pix = self._qr_label.pixmap()
+            has_pix = bool(pix is not None and not pix.isNull())
+            if needs_qr and self._qr_thread is None and (phase_changed or not has_pix):
+                if phase_changed or self._login_poll_tick % 3 == 0:
+                    self._refresh_qr()
             return
         if phase_changed or self._login_poll_tick % 5 == 0:
             self._refresh_account_info(quiet=True)
@@ -1662,11 +1684,22 @@ class AdminWindow(QMainWindow):
         dialog.activateWindow()
 
     def _docker_power(self, action: str) -> None:
-        """Dispatch container start/stop or open Docker Desktop without freezing UI."""
+        """Dispatch container start/stop/restart or open Docker Desktop without freezing UI."""
         if self._docker_thread is not None:
             return
         self._btn_docker_toggle.setEnabled(False)
+        self._btn_docker_restart.setEnabled(False)
         self._btn_docker_open.setEnabled(False)
+        if action == "restart":
+            self._docker_label.setText("重启中，等待 gRPC…")
+            self._docker_label.setProperty("role", "muted")
+            self._docker_label.style().unpolish(self._docker_label)
+            self._docker_label.style().polish(self._docker_label)
+        elif action == "start":
+            self._docker_label.setText("启动中，等待 gRPC…")
+            self._docker_label.setProperty("role", "muted")
+            self._docker_label.style().unpolish(self._docker_label)
+            self._docker_label.style().polish(self._docker_label)
         thread = QThread(self)
         worker = _DockerPowerWorker(action)
         worker.moveToThread(thread)
@@ -1694,10 +1727,16 @@ class AdminWindow(QMainWindow):
             title = {
                 "start": "启动容器失败",
                 "stop": "停止容器失败",
+                "restart": "重启容器失败",
                 "open": "打开 Docker Desktop 失败",
             }.get(action, "Docker 操作失败")
             QMessageBox.warning(self, title, str(err))
         self.refresh_status(refresh_docker=True)
+        # After a successful bounce, pull QR once if still on the login panel.
+        if err is None and action in {"start", "restart"}:
+            view = wejam_status.probe(load_settings().wejam_target)
+            if view.reachable and view.phase != "LOGGED_IN":
+                self._refresh_qr()
 
     def refresh_logs(self) -> None:
         """Reload runner logs with newest lines at the top (same as 0x01)."""
@@ -2085,14 +2124,87 @@ class AdminWindow(QMainWindow):
             return True
         return default
 
-    def load_personas(self) -> None:
-        """Refresh the persona pack list."""
+    def load_personas(self, select_id: str = "") -> None:
+        """Refresh the persona pack list and reselect the current or given pack."""
+        target = select_id or self._persona_id
+        self._persona_list.blockSignals(True)
         self._persona_list.clear()
+        chosen: QListWidgetItem | None = None
         for row in store.list_persona_packs():
             mark = "● " if row.get("active") else ""
             item = QListWidgetItem(f"{mark}{row['id']}  {row['title']}")
             item.setData(Qt.ItemDataRole.UserRole, row["id"])
             self._persona_list.addItem(item)
+            if row["id"] == target:
+                chosen = item
+        self._persona_list.blockSignals(False)
+        if chosen is not None:
+            self._persona_list.setCurrentItem(chosen)
+        else:
+            self.on_persona_selected(None)
+
+    def on_persona_double_clicked(self, item: QListWidgetItem) -> None:
+        """Edit the pack display title, folder id, and aliases line."""
+        persona_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        if not persona_id:
+            return
+        title = ""
+        for row in store.list_persona_packs():
+            if row.get("id") == persona_id:
+                title = str(row.get("title") or "")
+                break
+        aliases = store.read_persona_aliases(persona_id)
+        result = self._ask_persona_names(persona_id, title, aliases)
+        if result is None:
+            return
+        new_id, new_title, new_aliases = result
+        if (
+            self._persona_dirty
+            and self._persona_id == persona_id
+            and self._persona_file
+        ):
+            self.on_save_persona_file()
+        try:
+            saved_id = store.update_persona_names(
+                persona_id,
+                new_id=new_id,
+                title=new_title,
+                aliases=new_aliases,
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "改名失败", str(exc))
+            return
+        self._persona_id = saved_id
+        self.load_personas(select_id=saved_id)
+
+    def _ask_persona_names(
+        self, persona_id: str, title: str, aliases: str
+    ) -> tuple[str, str, str] | None:
+        """Dialog for display title, folder id, and aliases. None means cancel."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("修改名称")
+        form = QFormLayout(dialog)
+        title_edit = QLineEdit(title)
+        id_edit = QLineEdit(persona_id)
+        alias_edit = QLineEdit(aliases)
+        alias_edit.setPlaceholderText("多个用逗号分隔，写入 persona.txt")
+        form.addRow("显示名", title_edit)
+        form.addRow("id", id_edit)
+        form.addRow("别名", alias_edit)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        new_title = title_edit.text().strip()
+        new_id = id_edit.text().strip()
+        if not new_title or not new_id:
+            QMessageBox.warning(self, "改名失败", "显示名和 id 都不能为空。")
+            return self._ask_persona_names(persona_id, new_title or title, alias_edit.text())
+        return new_id, new_title, alias_edit.text().strip()
 
     def on_persona_selected(self, current: QListWidgetItem | None) -> None:
         """Show txt files for the selected pack."""

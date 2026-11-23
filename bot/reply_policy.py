@@ -682,6 +682,10 @@ class ReplyGate:
                     return "voice_empty"
                 if not policy.on_text:
                     return "kind_off"
+            elif content_type in {"image", "emotion"}:
+                # Capture may still fill image_paths after decide; only gate on_image.
+                if not policy.on_image:
+                    return "kind_off"
             else:
                 has_media = bool(message.image_paths) or content_type != "text"
                 if not user_text.strip() and not has_media:
@@ -912,6 +916,14 @@ def _looks_like_group_broadcast(text: str) -> bool:
 
 
 _VOICE_PLACEHOLDERS = frozenset({"", "[语音]", "[消息]"})
+_IMAGE_PLACEHOLDERS = frozenset(
+    {"", "[图片]", "[动画表情]", "[表情]", "[消息]"}
+)
+
+
+def is_image_placeholder_text(text: str) -> bool:
+    """True when *text* is a WeChat image/emotion session-list placeholder."""
+    return (text or "").strip() in _IMAGE_PLACEHOLDERS
 
 
 def _is_empty_voice_body(message: IncomingTurn) -> bool:
@@ -920,6 +932,23 @@ def _is_empty_voice_body(message: IncomingTurn) -> bool:
     if raw in _VOICE_PLACEHOLDERS:
         return True
     return message.user_text.strip() in _VOICE_PLACEHOLDERS
+
+
+def _is_empty_image_body(message: IncomingTurn) -> bool:
+    """True when an image/emotion turn has only a WeChat placeholder body."""
+    if is_image_placeholder_text(message.text or ""):
+        return True
+    return is_image_placeholder_text(message.user_text)
+
+
+def is_empty_image_turn(message: IncomingTurn) -> bool:
+    """True when image/emotion capture left nothing for the vision model."""
+    content_type = (message.content_type or "text").strip().lower() or "text"
+    if content_type not in {"image", "emotion"}:
+        return False
+    if message.image_paths:
+        return False
+    return _is_empty_image_body(message)
 
 
 def is_addressed(message: IncomingTurn, names: tuple[str, ...]) -> bool:

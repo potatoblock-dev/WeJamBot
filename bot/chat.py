@@ -22,7 +22,12 @@ from bot.memory.store import MemoryStore
 from bot.prompt_evolution.store import PromptEvolutionStore
 from bot.prompt_evolution.writer import PromptEvolutionWriter
 from bot.reply import TextSender, strip_sticker_markers
-from bot.reply_policy import ReplyGate, is_addressed
+from bot.reply_policy import (
+    ReplyGate,
+    is_addressed,
+    is_empty_image_turn,
+    is_image_placeholder_text,
+)
 from bot.transcript.focus import apply_recent_focus
 from bot.transcript.store import TranscriptRow, TranscriptStore
 
@@ -123,30 +128,39 @@ class ChatBot:
             return mi == li
         return False
 
-    def _apply_latest(self, message: IncomingTurn, latest: SeenMessage) -> IncomingTurn:
-        """Merge ReadLatest onto the inbound turn; refuse to overwrite a different bubble."""
+    def _preview_media_trusts_latest(
+        self, message: IncomingTurn, latest: SeenMessage
+    ) -> bool:
+        """True when a global-watch preview should take ReadLatest media fields.
+
+        Session-list previews use a different msg_id scheme and index=0, so the
+        strict same-bubble check never merges cropped attachments. Trust latest
+        only for image/emotion previews without a reliable bubble identity.
+        """
+        if not message.preview_only:
+            return False
+        latest_type = (latest.content_type or "text").strip().lower() or "text"
+        if latest_type not in {"image", "emotion"}:
+            return False
+        inbound_type = (message.content_type or "text").strip().lower() or "text"
+        looks_media = inbound_type in {"image", "emotion"} or is_image_placeholder_text(
+            message.text
+        )
+        if not looks_media:
+            return False
+        mid = (message.msg_id or "").strip()
+        lid = (latest.message_id or "").strip()
+        if int(message.index or 0) <= 0:
+            return True
+        if mid and lid and mid != lid:
+            return True
+        return False
+
+    def _merge_full_latest(
+        self, message: IncomingTurn, latest: SeenMessage
+    ) -> IncomingTurn:
+        """Copy ReadLatest bubble fields (type/index/attachments/text) onto the turn."""
         bridge_type = _normalize_chat_type(latest.chat_type)
-        if not self._latest_is_same_bubble(message, latest):
-            # Ambiguous / mismatched latest: only fill blank routing fields.
-            sender = message.sender.strip() or (latest.sender or "").strip()
-            chat_type = message.chat_type or bridge_type
-            if sender == message.sender and chat_type == message.chat_type:
-                return message
-            return IncomingTurn(
-                chat=message.chat,
-                sender=sender,
-                text=message.text,
-                preview_only=message.preview_only,
-                from_self=message.from_self,
-                chat_type=chat_type,
-                msg_id=message.msg_id,
-                unread=message.unread,
-                content_type=message.content_type,
-                index=message.index,
-                image_paths=message.image_paths,
-                quote_text=message.quote_text,
-                quote_sender=message.quote_sender,
-            )
         sender = latest.sender or message.sender
         content_type = (
             (latest.content_type or message.content_type or "text").strip().lower()
@@ -190,6 +204,34 @@ class ChatBot:
             image_paths=tuple(image_paths),
             quote_text=quote_text,
             quote_sender=quote_sender,
+        )
+
+    def _apply_latest(self, message: IncomingTurn, latest: SeenMessage) -> IncomingTurn:
+        """Merge ReadLatest onto the inbound turn; refuse to overwrite a different bubble."""
+        bridge_type = _normalize_chat_type(latest.chat_type)
+        if self._latest_is_same_bubble(message, latest) or self._preview_media_trusts_latest(
+            message, latest
+        ):
+            return self._merge_full_latest(message, latest)
+        # Ambiguous / mismatched latest: only fill blank routing fields.
+        sender = message.sender.strip() or (latest.sender or "").strip()
+        chat_type = message.chat_type or bridge_type
+        if sender == message.sender and chat_type == message.chat_type:
+            return message
+        return IncomingTurn(
+            chat=message.chat,
+            sender=sender,
+            text=message.text,
+            preview_only=message.preview_only,
+            from_self=message.from_self,
+            chat_type=chat_type,
+            msg_id=message.msg_id,
+            unread=message.unread,
+            content_type=message.content_type,
+            index=message.index,
+            image_paths=message.image_paths,
+            quote_text=message.quote_text,
+            quote_sender=message.quote_sender,
         )
 
     def _enrich_quote_context(self, message: IncomingTurn) -> IncomingTurn:
@@ -361,7 +403,7 @@ class ChatBot:
 
         needs_gui_capture = (
             eyes is not None
-            and content_type == "emotion"
+            and content_type in {"emotion", "image"}
             and not image_paths
             and callable(getattr(eyes, "capture_message_media", None))
         )
@@ -413,6 +455,14 @@ class ChatBot:
             message, bridge_history = self._enrich_context_and_media(message)
             self._append_inbound(message, source="allow")
             user_text = message.user_text.strip()
+            if is_empty_image_turn(message):
+                _log.info(
+                    "skip reply reason=image_empty text=%r",
+                    message.user_text[:80],
+                )
+                self._gate.abandon_reply_slot()
+                slot_open = False
+                return
             if not user_text and not message.image_paths:
                 # decide() already reserved cooldown/cap; roll back when capture left nothing.
                 self._gate.abandon_reply_slot()

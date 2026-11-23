@@ -133,7 +133,7 @@ def test_enrich_uses_bridge_context_as_history(tmp_path: Path) -> None:
 
 
 def test_enrich_tolerates_openclaw_unsupported_capture(tmp_path: Path) -> None:
-    """Emotion turn still replies with text when capture is unsupported."""
+    """Unsupported capture must not crash; empty emotion skips via image_empty."""
     eyes = _BridgeEyes(latest_content_type="emotion")
     model = _QuietModel()
     impressions = ImpressionStore(tmp_path / "impressions")
@@ -159,7 +159,7 @@ def test_enrich_tolerates_openclaw_unsupported_capture(tmp_path: Path) -> None:
         )
     )
     assert eyes.capture_calls == 1
-    assert eyes.sent == [("文件传输助手", "在的")]
+    assert eyes.sent == []
 
 
 def test_enrich_skips_capture_when_bridge_attachments_present(tmp_path: Path) -> None:
@@ -335,6 +335,90 @@ def test_apply_latest_ignores_newer_different_msg_id(tmp_path: Path) -> None:
     assert out.index == 3
     assert out.sender == "甲"
     assert out.msg_id == "emo-1"
+
+
+def test_apply_latest_preview_image_takes_attachments(tmp_path: Path) -> None:
+    """Global-watch [图片] preview must merge ReadLatest crop paths despite id mismatch."""
+    impressions = ImpressionStore(tmp_path / "impressions")
+    bot = ChatBot(
+        _QuietModel(),  # type: ignore[arg-type]
+        MemoryStore(tmp_path / "bot.sqlite3", 8),
+        ReplyGate(tmp_path / "missing.toml"),
+        impressions,
+        ImpressionWriter(_QuietModel(), impressions),  # type: ignore[arg-type]
+    )
+    sticker = tmp_path / "shot.png"
+    sticker.write_bytes(b"PNG")
+    inbound = IncomingTurn(
+        chat="1145",
+        sender="甲",
+        text="[图片]",
+        chat_type="group",
+        preview_only=True,
+        msg_id="preview-hash",
+        content_type="text",
+        index=0,
+    )
+    latest = SeenMessage(
+        chat="1145",
+        text="[图片]",
+        sender="甲",
+        chat_type="group",
+        message_id="bubble-hash",
+        content_type="image",
+        index=7,
+        attachments=(
+            MediaAttachment(kind="image", path=str(sticker), frame_index=0),
+        ),
+    )
+    out = bot._apply_latest(inbound, latest)
+    assert out.content_type == "image"
+    assert out.index == 7
+    assert out.image_paths == (str(sticker),)
+    assert out.preview_only is False
+
+
+def test_apply_latest_preview_text_does_not_take_image(tmp_path: Path) -> None:
+    """Plain text preview must not be overwritten by a newer image ReadLatest."""
+    impressions = ImpressionStore(tmp_path / "impressions")
+    bot = ChatBot(
+        _QuietModel(),  # type: ignore[arg-type]
+        MemoryStore(tmp_path / "bot.sqlite3", 8),
+        ReplyGate(tmp_path / "missing.toml"),
+        impressions,
+        ImpressionWriter(_QuietModel(), impressions),  # type: ignore[arg-type]
+    )
+    sticker = tmp_path / "shot.png"
+    sticker.write_bytes(b"PNG")
+    inbound = IncomingTurn(
+        chat="1145",
+        sender="甲",
+        text="大家好",
+        chat_type="group",
+        preview_only=True,
+        msg_id="preview-hash",
+        content_type="text",
+        index=0,
+    )
+    latest = SeenMessage(
+        chat="1145",
+        text="[图片]",
+        sender="乙",
+        chat_type="group",
+        message_id="bubble-hash",
+        content_type="image",
+        index=7,
+        attachments=(
+            MediaAttachment(kind="image", path=str(sticker), frame_index=0),
+        ),
+    )
+    out = bot._apply_latest(inbound, latest)
+    assert out.text == "大家好"
+    assert out.content_type == "text"
+    assert out.index == 0
+    assert out.image_paths == ()
+    assert out.preview_only is True
+    assert out.sender == "甲"
 
 
 def test_empty_emotion_failed_capture_abandons_rate_limit(tmp_path: Path) -> None:

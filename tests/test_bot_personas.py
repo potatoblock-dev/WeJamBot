@@ -19,6 +19,54 @@ def test_folder_scan_and_set_active(tmp_path: Path) -> None:
     assert chunks[0] == "另一套口吻"
 
 
+def test_update_names_retitles_and_renames_folder(tmp_path: Path) -> None:
+    """Display title, folder id, and the aliases line can be edited together."""
+    pack = tmp_path / "personas" / "baitang"
+    pack.mkdir(parents=True)
+    (pack / "persona.txt").write_text(
+        "# 人设 葡萄糖\n- persona_id: `baitang`\n- aliases: 葡萄糖\n\n正文\n",
+        encoding="utf-8",
+    )
+    (pack / "notes.txt").write_text("keep", encoding="utf-8")
+    catalog = PersonaCatalog(tmp_path / "personas.toml", tmp_path / "personas")
+    catalog.set_active("baitang")
+    renamed = catalog.update_names(
+        "baitang", new_id="sugar", title="白糖", aliases="葡萄糖, 白糖"
+    )
+    assert renamed.id == "sugar"
+    assert renamed.title == "白糖"
+    assert catalog.active_id() == "sugar"
+    assert not pack.exists()
+    moved = tmp_path / "personas" / "sugar"
+    assert (moved / "notes.txt").read_text(encoding="utf-8") == "keep"
+    body = (moved / "persona.txt").read_text(encoding="utf-8")
+    assert "- persona_id: `sugar`" in body
+    assert "- aliases: 葡萄糖, 白糖" in body
+    assert "正文" in body
+    again = PersonaCatalog(tmp_path / "personas.toml", tmp_path / "personas")
+    assert again.entry("sugar") is not None
+    assert again.entry("sugar").title == "白糖"
+    assert again.active_id() == "sugar"
+
+
+def test_update_names_rejects_taken_id(tmp_path: Path) -> None:
+    """Renaming onto an existing pack id is refused and leaves both folders."""
+    root = tmp_path / "personas"
+    for name in ("aaa", "bbb"):
+        folder = root / name
+        folder.mkdir(parents=True)
+        (folder / "persona.txt").write_text(name, encoding="utf-8")
+    catalog = PersonaCatalog(tmp_path / "personas.toml", root)
+    try:
+        catalog.update_names("aaa", new_id="bbb", title="甲", aliases="")
+    except ValueError as exc:
+        assert "已有人设" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+    assert (root / "aaa").is_dir()
+    assert (root / "bbb").is_dir()
+
+
 def test_prompt_book_puts_guards_before_impression(tmp_path: Path) -> None:
     """Policy anti-injection precedes the impression block."""
     pack = tmp_path / "personas" / "default"

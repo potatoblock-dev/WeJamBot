@@ -17,6 +17,8 @@ _DEFAULT_NAME = "wejam-session"
 _CALLUS_NAME = "callus-session"
 _CMD_TIMEOUT = 8
 _START_TIMEOUT = 120
+_READY_TIMEOUT = 90.0
+_READY_POLL_SECONDS = 1.0
 
 
 def session_container_name() -> str:
@@ -297,6 +299,7 @@ def start_session() -> None:
         if proc.returncode != 0:
             msg = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
             raise RuntimeError(_short_err(msg, limit=400))
+        wait_session_ready()
         return
     img = image_info(image_name)
     if not img.get("present"):
@@ -318,6 +321,7 @@ def start_session() -> None:
     if proc.returncode != 0:
         msg = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
         raise RuntimeError(_short_err(msg, limit=400))
+    wait_session_ready()
 
 
 def stop_session() -> None:
@@ -338,6 +342,70 @@ def stop_session() -> None:
         if "no such" in combined:
             return
         raise RuntimeError(_short_err(proc.stderr or proc.stdout or "stop failed"))
+
+
+def session_grpc_target() -> str:
+    """Host:port the admin UI / wait_ready should probe for this session."""
+    target = (os.environ.get("WEJAM_TARGET") or "").strip()
+    if target:
+        return target.rsplit("@", 1)[-1]
+    try:
+        from bot.config import load_settings
+
+        return load_settings().wejam_target
+    except Exception:
+        name = session_container_name()
+        return "127.0.0.1:7700" if name == _DEFAULT_NAME else "127.0.0.1:7701"
+
+
+def wait_session_ready(*, timeout: float = _READY_TIMEOUT) -> None:
+    """Poll until the session container is up and its gRPC endpoint answers.
+
+    Raises RuntimeError when the deadline passes without a reachable probe.
+    """
+    import time
+
+    from bot.admin import wejam_status
+
+    name = session_container_name()
+    target = session_grpc_target()
+    deadline = time.monotonic() + max(5.0, float(timeout))
+    last_err = "未开始探测"
+    while time.monotonic() < deadline:
+        ctr = container_info(name)
+        if ctr.get("running"):
+            view = wejam_status.probe(target)
+            if view.reachable:
+                return
+            last_err = view.error or "gRPC 未就绪"
+        else:
+            last_err = f"容器状态 {ctr.get('status') or 'unknown'}"
+        time.sleep(_READY_POLL_SECONDS)
+    raise RuntimeError(f"等待会话就绪超时（{target}）：{_short_err(last_err, limit=240)}")
+
+
+def restart_session() -> None:
+    """Atomically restart the session container, then wait until gRPC is reachable.
+
+    Uses ``docker restart`` when the container exists (keeps the data volume and
+    login profile). Absent containers fall through to ``start_session``.
+    """
+    ok, err = daemon_ok()
+    if not ok:
+        raise RuntimeError(f"Docker 引擎未就绪：{err or '请先打开 Docker Desktop'}")
+    name = session_container_name()
+    ctr = container_info(name)
+    if not ctr.get("exists"):
+        start_session()
+        return
+    try:
+        proc = _run_docker(["restart", name], timeout=_START_TIMEOUT)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("重启容器超时") from exc
+    if proc.returncode != 0:
+        msg = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
+        raise RuntimeError(_short_err(msg, limit=400))
+    wait_session_ready()
 
 
 def open_docker_desktop() -> None:

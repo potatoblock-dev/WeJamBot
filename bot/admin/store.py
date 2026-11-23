@@ -174,6 +174,12 @@ def stop_wejam_container() -> DockerSnapshot:
     return docker_control.docker_snapshot()
 
 
+def restart_wejam_container() -> DockerSnapshot:
+    """Restart the WeChat session container and wait until gRPC answers."""
+    docker_control.restart_session()
+    return docker_control.docker_snapshot()
+
+
 def open_docker_app() -> None:
     """Open Docker Desktop so the engine can come up."""
     docker_control.open_docker_desktop()
@@ -225,6 +231,23 @@ def save_persona_file(persona_id: str, filename: str, text: str) -> Path:
 def add_persona_file(persona_id: str, filename: str) -> Path:
     """Create an empty txt in a pack."""
     return _persona_catalog().add_file(persona_id, filename)
+
+
+def read_persona_aliases(persona_id: str) -> str:
+    """Return the aliases line from a pack's persona.txt, or empty."""
+    from bot.personas.catalog import read_persona_aliases as _read_aliases
+
+    return _read_aliases(_persona_catalog().read_file(persona_id, "persona.txt"))
+
+
+def update_persona_names(
+    persona_id: str, *, new_id: str, title: str, aliases: str
+) -> str:
+    """Write display title, folder id, and aliases. Returns the id now on disk."""
+    entry = _persona_catalog().update_names(
+        persona_id, new_id=new_id, title=title, aliases=aliases
+    )
+    return entry.id
 
 
 def new_persona_pack(persona_id: str, title: str = "") -> dict[str, object]:

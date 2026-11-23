@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from io import BytesIO
 
@@ -61,19 +62,52 @@ def probe(target: str) -> WejamView:
         )
 
 
-def fetch_qr_png(target: str) -> tuple[bytes, str]:
-    """Re-decode the on-screen login QR and return PNG bytes plus revision."""
-    with Client(target, timeout=8) as client:
-        qr = client.qr_code(refresh=True)
-        payload = str(qr.payload or "")
-        if not payload:
-            return b"", str(qr.revision or "")
-        import qrcode
+def _is_connect_error(exc: BaseException) -> bool:
+    """True when the failure looks like gRPC not up yet after a container bounce."""
+    text = str(exc).lower()
+    needles = (
+        "unavailable",
+        "connection refused",
+        "failed to connect",
+        "socket closed",
+        "statuscode.unavailable",
+        "dns resolution failed",
+    )
+    return any(n in text for n in needles)
 
-        image = qrcode.make(payload)
-        buf = BytesIO()
-        image.save(buf, format="PNG")
-        return buf.getvalue(), str(qr.revision or "")
+
+def fetch_qr_png(target: str) -> tuple[bytes, str]:
+    """Return login QR PNG bytes plus revision; prefer cached payload, then refresh.
+
+    Retries briefly on connect errors so a just-restarted agent can finish binding.
+    """
+    import qrcode
+
+    last_exc: BaseException | None = None
+    for attempt in range(3):
+        try:
+            with Client(target, timeout=8) as client:
+                qr = client.qr_code(refresh=False)
+                payload = str(qr.payload or "").strip()
+                revision = str(qr.revision or "")
+                if not payload:
+                    qr = client.qr_code(refresh=True)
+                    payload = str(qr.payload or "").strip()
+                    revision = str(qr.revision or "") or revision
+                if not payload:
+                    return b"", revision
+                image = qrcode.make(payload)
+                buf = BytesIO()
+                image.save(buf, format="PNG")
+                return buf.getvalue(), revision
+        except Exception as exc:  # noqa: BLE001 — retry connect blips, else raise
+            last_exc = exc
+            if attempt < 2 and _is_connect_error(exc):
+                time.sleep(1.0)
+                continue
+            raise
+    assert last_exc is not None
+    raise last_exc
 
 
 def submit_login(target: str) -> str:
@@ -121,3 +155,18 @@ def account_summary(target: str) -> AccountView:
             account_hint="",
             error=str(exc),
         )
+
+
+def login_phase_wants_qr(phase: str) -> bool:
+    """True when the login panel should auto-pull a QR for this phase label."""
+    token = (phase or "").strip().upper()
+    if not token or token == "LOGGED_IN":
+        return False
+    return token in {
+        "STARTING",
+        "QR_READY",
+        "ONE_CLICK_READY",
+        "WAIT_PHONE",
+        "UNKNOWN",
+        "UNSPECIFIED",
+    }

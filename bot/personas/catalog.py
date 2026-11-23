@@ -13,6 +13,8 @@ from pathlib import Path
 _log = logging.getLogger(__name__)
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,31}$")
+_ALIAS_LINE = re.compile(r"(?m)^(- aliases:\s*)(.*)$")
+_PERSONA_ID_LINE = re.compile(r"(?m)^(- persona_id:\s*)(`[^`]*`|.*)$")
 _FILE_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,62}\.txt$")
 _PERSONA_TXT = "persona.txt"
 _ANTI_TXT = "anti_injection.txt"
@@ -190,6 +192,49 @@ class PersonaCatalog:
         self._write_index()
         self.invalidate()
         return self._by_id[key]
+
+    def update_names(
+        self,
+        persona_id: str,
+        *,
+        new_id: str,
+        title: str,
+        aliases: str,
+    ) -> PersonaEntry:
+        """Change the display title, folder id, and the aliases line in persona.txt.
+
+        A new id moves the pack folder and follows the active flag. An aliases
+        value rewrites `- aliases:`; an empty value clears that line when it
+        already exists and does not invent one.
+        """
+        self._reload_if_changed()
+        old = normalize_persona_id(persona_id)
+        nxt = normalize_persona_id(new_id)
+        label = (title or "").strip()
+        if not old or old not in self._by_id:
+            raise ValueError("人设不存在")
+        if not nxt:
+            raise ValueError("人设 id 仅限小写字母、数字、下划线和短横")
+        if not label:
+            raise ValueError("显示名不能为空")
+        if nxt != old and nxt in self._by_id:
+            raise ValueError(f"已有人设 {nxt}")
+        entry = self._by_id[old]
+        folder = entry.path
+        if nxt != old:
+            dest = (self._personas_dir / nxt).resolve()
+            if dest.exists():
+                raise ValueError(f"已有人设 {nxt}")
+            folder.rename(dest)
+            folder = dest
+            del self._by_id[old]
+            if self._active == old:
+                self._active = nxt
+        self._by_id[nxt] = PersonaEntry(id=nxt, title=label, path=folder)
+        _rewrite_persona_name_lines(folder / _PERSONA_TXT, nxt, aliases)
+        self._write_index()
+        self.invalidate()
+        return self._by_id[nxt]
 
     def set_active(self, persona_id: str) -> str:
         """Enable one pack; next chat reloads PromptBook from disk."""
@@ -426,6 +471,46 @@ def _merge_folder_packs(by_id: dict[str, PersonaEntry], personas_dir: Path) -> N
             continue
         by_id[key] = PersonaEntry(id=key, title=key, path=path.resolve())
         _log.info("persona folder scan id=%s", key)
+
+
+def read_persona_aliases(text: str) -> str:
+    """Return the `- aliases:` value from a persona.txt body, or empty."""
+    match = _ALIAS_LINE.search(text or "")
+    if match is None:
+        return ""
+    return match.group(2).strip()
+
+
+def _rewrite_persona_name_lines(path: Path, persona_id: str, aliases: str) -> None:
+    """Keep persona.txt's id and aliases lines aligned with the pack names."""
+    if not path.is_file():
+        return
+    text = path.read_text(encoding="utf-8")
+    updated = _upsert_persona_id_line(text, persona_id)
+    updated = _upsert_alias_line(updated, aliases)
+    if updated != text:
+        path.write_text(updated, encoding="utf-8")
+
+
+def _upsert_persona_id_line(text: str, persona_id: str) -> str:
+    """Replace an existing `- persona_id:` line. Leave files without one unchanged."""
+    if not _PERSONA_ID_LINE.search(text):
+        return text
+    return _PERSONA_ID_LINE.sub(rf"\g<1>`{persona_id}`", text, count=1)
+
+
+def _upsert_alias_line(text: str, aliases: str) -> str:
+    """Replace, clear, or insert one `- aliases:` line."""
+    rendered = (aliases or "").strip()
+    if _ALIAS_LINE.search(text):
+        return _ALIAS_LINE.sub(lambda match: match.group(1) + rendered, text, count=1)
+    if not rendered:
+        return text
+    insert = f"- aliases: {rendered}\n"
+    id_line = re.search(r"(?m)^- persona_id:.*\n", text)
+    if id_line is not None:
+        return text[: id_line.end()] + insert + text[id_line.end() :]
+    return insert + (text or "")
 
 
 def _read_txt(path: Path) -> str:

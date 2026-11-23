@@ -159,7 +159,11 @@ class WeJamHands:
         if not bool(getattr(resp, "ok", False)):
             detail = str(getattr(resp, "detail", "") or "")
             raise HandsRejected(detail or "capture_message_media failed")
-        return [_media(row) for row in getattr(resp, "attachments", ()) or ()]
+        return [
+            item
+            for item in (_media(row) for row in getattr(resp, "attachments", ()) or ())
+            if item.path
+        ]
 
 
 def _call(fn):
@@ -210,10 +214,14 @@ def _conversation(row: object) -> Conversation:
 
 
 def _media(row: object) -> MediaAttachment:
-    """Copy one MediaAttachment protobuf row."""
+    """Copy one MediaAttachment protobuf row onto a host-readable path when needed."""
+    from bot.media_fetch import materialize_media_path
+
+    raw_path = str(getattr(row, "path", "") or "")
+    host_path = materialize_media_path(raw_path) if raw_path else ""
     return MediaAttachment(
         kind=str(getattr(row, "kind", "") or ""),
-        path=str(getattr(row, "path", "") or ""),
+        path=host_path or raw_path,
         sha256=str(getattr(row, "sha256", "") or ""),
         sampled=bool(getattr(row, "sampled", False)),
         frame_index=int(getattr(row, "frame_index", 0) or 0),
@@ -222,7 +230,11 @@ def _media(row: object) -> MediaAttachment:
 
 def _seen_message(message: object, *, chat_type: str = "", unread: int = 0) -> SeenMessage:
     """Copy one wire Message onto SeenMessage including optional attachments."""
-    attachments = tuple(_media(row) for row in getattr(message, "attachments", ()) or ())
+    attachments = tuple(
+        item
+        for item in (_media(row) for row in getattr(message, "attachments", ()) or ())
+        if item.path
+    )
     return SeenMessage(
         chat=str(getattr(message, "chat", "") or "").strip(),
         text=str(getattr(message, "text", "") or "").strip(),
