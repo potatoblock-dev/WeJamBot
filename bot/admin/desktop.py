@@ -1205,7 +1205,9 @@ class AdminWindow(QMainWindow):
         self._transcript_path_label.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
         )
-        self._transcript_path_label.setToolTip("只读。回复窗口在策略页调整。")
+        self._transcript_path_label.setToolTip(
+            "本地回复上下文（环缓冲 + 短记忆）。清空不影响印象 / 人设 / 群文化。"
+        )
         outer.addWidget(self._transcript_path_label)
         tools = QHBoxLayout()
         self._btn_transcript_refresh = QPushButton("刷新")
@@ -1219,6 +1221,16 @@ class AdminWindow(QMainWindow):
         self._transcript_limit.setValue(200)
         tools.addWidget(self._transcript_limit)
         tools.addStretch(1)
+        self._btn_clear_chat_context = QPushButton("清空本会话上下文")
+        self._btn_clear_chat_context.setToolTip(
+            "清除左侧选中会话的本地记录与短记忆，不删印象等永久档案。"
+        )
+        self._btn_clear_all_context = QPushButton("清空全部上下文")
+        self._btn_clear_all_context.setToolTip(
+            "清除所有会话的本地记录与短记忆，不删印象等永久档案。"
+        )
+        tools.addWidget(self._btn_clear_chat_context)
+        tools.addWidget(self._btn_clear_all_context)
         outer.addLayout(tools)
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -1428,6 +1440,8 @@ class AdminWindow(QMainWindow):
             self.on_prompt_evolution_active_selected
         )
         self._btn_transcript_refresh.clicked.connect(self.load_transcripts)
+        self._btn_clear_chat_context.clicked.connect(self.on_clear_chat_context)
+        self._btn_clear_all_context.clicked.connect(self.on_clear_all_context)
         self._btn_transcript_folder.clicked.connect(
             lambda: store.reveal_in_file_manager(store.transcript_db_path().parent)
         )
@@ -2761,9 +2775,65 @@ class AdminWindow(QMainWindow):
     def load_transcripts(self) -> None:
         """Refresh chat list from the local inbound_transcript SQLite ring."""
         db = store.transcript_db_path()
-        self._transcript_path_label.setText(f"存放位置：{db}（表 inbound_transcript）")
+        self._transcript_path_label.setText(
+            f"存放位置：{db}（表 inbound_transcript / chat_turns；清空只动这两张表）"
+        )
         self._transcript_rows = store.list_transcript_chats()
         self.render_transcript_chats()
+
+    def on_clear_chat_context(self) -> None:
+        """Clear transcript + short memory for the selected chat only."""
+        item = self._transcript_list.currentItem()
+        if item is None:
+            QMessageBox.information(self, "清空本会话上下文", "请先在左侧选一个会话。")
+            return
+        chat = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
+        if not chat:
+            QMessageBox.information(self, "清空本会话上下文", "请先在左侧选一个会话。")
+            return
+        answer = QMessageBox.question(
+            self,
+            "清空本会话上下文",
+            f"清除「{chat}」的本地记录与短记忆？\n"
+            "不会删除印象、人设、群文化等永久档案。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            counts = store.clear_chat_context(chat)
+        except OSError as exc:
+            QMessageBox.warning(self, "清空失败", str(exc))
+            return
+        self.load_transcripts()
+        self._transcript_body.setPlainText(
+            f"已清空「{chat}」上下文"
+            f"（记录 {counts.get('transcript', 0)} 条，短记忆 {counts.get('memory', 0)} 条）。"
+        )
+
+    def on_clear_all_context(self) -> None:
+        """Clear transcript + short memory for every chat."""
+        answer = QMessageBox.question(
+            self,
+            "清空全部上下文",
+            "清除所有会话的本地记录与短记忆？\n"
+            "不会删除印象、人设、群文化等永久档案。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            counts = store.clear_all_context()
+        except OSError as exc:
+            QMessageBox.warning(self, "清空失败", str(exc))
+            return
+        self.load_transcripts()
+        self._transcript_body.setPlainText(
+            f"已清空全部上下文"
+            f"（记录 {counts.get('transcript', 0)} 条，短记忆 {counts.get('memory', 0)} 条）。"
+        )
 
     def render_transcript_chats(self) -> None:
         """Fill the transcript chat list, applying the search box."""

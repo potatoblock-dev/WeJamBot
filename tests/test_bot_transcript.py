@@ -61,6 +61,32 @@ def test_transcript_list_chats(tmp_path: Path) -> None:
     assert chats[0][0] == "群A"
 
 
+def test_transcript_clear_chat_and_all(tmp_path: Path) -> None:
+    """clear_chat removes one title; clear_all wipes the ring."""
+    store = TranscriptStore(tmp_path / "bot.sqlite3", max_messages=50)
+    store.append("群A", text="1", sender="甲", source="observe")
+    store.append("群B", text="2", sender="乙", source="allow")
+    assert store.clear_chat("群A") == 1
+    assert store.recent("群A", 10) == []
+    assert len(store.recent("群B", 10)) == 1
+    assert store.clear_all() == 1
+    assert store.list_chats() == []
+
+
+def test_memory_clear_chat_covers_group_sessions(tmp_path: Path) -> None:
+    """clear_chat drops both bare chat keys and chat:sender session keys."""
+    memory = MemoryStore(tmp_path / "bot.sqlite3", 8)
+    memory.append("群A", "user", "hello")
+    memory.append("群A:甲", "user", "from 甲")
+    memory.append("群B:乙", "assistant", "keep")
+    assert memory.clear_chat("群A") == 2
+    assert memory.history("群A") == []
+    assert memory.history("群A:甲") == []
+    assert memory.history("群B:乙") == [{"role": "assistant", "content": "keep"}]
+    assert memory.clear_all() == 1
+    assert memory.history("群B:乙") == []
+
+
 def test_observe_defers_until_digest_count(tmp_path: Path) -> None:
     """With a long interval, archive writers wait until digest_min_messages."""
     policy = tmp_path / "reply_policy.toml"

@@ -926,12 +926,16 @@ def is_image_placeholder_text(text: str) -> bool:
     return (text or "").strip() in _IMAGE_PLACEHOLDERS
 
 
+def is_voice_placeholder_text(text: str) -> bool:
+    """True when *text* is a WeChat voice session-list placeholder."""
+    return (text or "").strip() in _VOICE_PLACEHOLDERS
+
+
 def _is_empty_voice_body(message: IncomingTurn) -> bool:
     """True when voice STT left only a placeholder or blank body."""
-    raw = (message.text or "").strip()
-    if raw in _VOICE_PLACEHOLDERS:
+    if is_voice_placeholder_text(message.text or ""):
         return True
-    return message.user_text.strip() in _VOICE_PLACEHOLDERS
+    return is_voice_placeholder_text(message.user_text)
 
 
 def _is_empty_image_body(message: IncomingTurn) -> bool:

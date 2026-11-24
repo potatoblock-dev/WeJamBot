@@ -205,6 +205,26 @@ class TranscriptStore:
                 out.append({"role": role, "content": body.strip()})
         return out
 
+    def clear_chat(self, chat: str) -> int:
+        """Delete all ring rows for one chat title; return how many rows were removed."""
+        title = (chat or "").strip()
+        if not title or not self._db_path.is_file():
+            return 0
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM inbound_transcript WHERE chat = ?",
+                (title,),
+            )
+            return int(cursor.rowcount or 0)
+
+    def clear_all(self) -> int:
+        """Delete every inbound_transcript row; return how many rows were removed."""
+        if not self._db_path.is_file():
+            return 0
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM inbound_transcript")
+            return int(cursor.rowcount or 0)
+
 
 def _row(item: tuple[object, ...]) -> TranscriptRow:
     """Build a TranscriptRow from a SQLite tuple."""

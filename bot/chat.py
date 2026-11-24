@@ -27,6 +27,7 @@ from bot.reply_policy import (
     is_addressed,
     is_empty_image_turn,
     is_image_placeholder_text,
+    is_voice_placeholder_text,
 )
 from bot.transcript.focus import apply_recent_focus
 from bot.transcript.store import TranscriptRow, TranscriptStore
@@ -131,21 +132,28 @@ class ChatBot:
     def _preview_media_trusts_latest(
         self, message: IncomingTurn, latest: SeenMessage
     ) -> bool:
-        """True when a global-watch preview should take ReadLatest media fields.
+        """True when a global-watch preview should take ReadLatest media/voice fields.
 
         Session-list previews use a different msg_id scheme and index=0, so the
-        strict same-bubble check never merges cropped attachments. Trust latest
-        only for image/emotion previews without a reliable bubble identity.
+        strict same-bubble check never merges cropped attachments or STT text.
+        Trust latest only for image/emotion/voice previews without a reliable
+        bubble identity.
         """
         if not message.preview_only:
             return False
         latest_type = (latest.content_type or "text").strip().lower() or "text"
-        if latest_type not in {"image", "emotion"}:
+        if latest_type not in {"image", "emotion", "voice"}:
             return False
         inbound_type = (message.content_type or "text").strip().lower() or "text"
-        looks_media = inbound_type in {"image", "emotion"} or is_image_placeholder_text(
-            message.text
-        )
+        if latest_type == "voice":
+            looks_media = inbound_type == "voice" or is_voice_placeholder_text(
+                message.text
+            )
+        else:
+            looks_media = inbound_type in {
+                "image",
+                "emotion",
+            } or is_image_placeholder_text(message.text)
         if not looks_media:
             return False
         mid = (message.msg_id or "").strip()

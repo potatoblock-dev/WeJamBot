@@ -79,3 +79,24 @@ class MemoryStore:
                 """,
                 (session_id, session_id, self._max_turns * 2),
             )
+
+    def clear_chat(self, chat: str) -> int:
+        """Delete short-term turns for a chat title and its ``chat:sender`` keys."""
+        title = (chat or "").strip()
+        if not title:
+            return 0
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM chat_turns
+                WHERE session_id = ? OR session_id LIKE ?
+                """,
+                (title, f"{title}:%"),
+            )
+            return int(cursor.rowcount or 0)
+
+    def clear_all(self) -> int:
+        """Delete every short-term chat_turns row; return how many were removed."""
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM chat_turns")
+            return int(cursor.rowcount or 0)

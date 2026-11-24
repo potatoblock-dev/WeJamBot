@@ -17,6 +17,7 @@ from bot.group_culture.store import GroupCultureStore
 from bot.bot_mode import bot_mode_label, load_bot_mode, save_bot_mode, toggle_bot_mode
 from bot.identity.directory import IdentityDirectory
 from bot.impression.store import ImpressionStore
+from bot.memory.store import MemoryStore
 from bot.personas.catalog import PersonaCatalog
 from bot.prompt_evolution.store import PromptEvolutionStore
 from bot.reply_policy import (
@@ -127,6 +128,29 @@ def list_transcript_chats() -> list[dict[str, Any]]:
 def load_transcript_messages(chat: str, limit: int = 200) -> list[TranscriptRow]:
     """Load the newest ``limit`` bubbles for one chat, oldest-first."""
     return _transcript_store().recent(chat, limit)
+
+
+def _memory_store() -> MemoryStore:
+    """Short-term LLM history store co-located with the transcript SQLite file."""
+    settings = load_settings()
+    return MemoryStore(settings.data_dir / "bot.sqlite3", settings.memory_max_turns)
+
+
+def clear_chat_context(chat: str) -> dict[str, int]:
+    """Wipe transcript + short memory for one chat; leave impressions untouched."""
+    title = (chat or "").strip()
+    if not title:
+        return {"transcript": 0, "memory": 0}
+    transcript_n = _transcript_store().clear_chat(title)
+    memory_n = _memory_store().clear_chat(title)
+    return {"transcript": transcript_n, "memory": memory_n}
+
+
+def clear_all_context() -> dict[str, int]:
+    """Wipe all transcript + short memory rows; leave impressions untouched."""
+    transcript_n = _transcript_store().clear_all()
+    memory_n = _memory_store().clear_all()
+    return {"transcript": transcript_n, "memory": memory_n}
 
 
 def bot_snapshot() -> BotSnapshot:

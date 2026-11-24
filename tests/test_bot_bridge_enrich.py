@@ -421,6 +421,79 @@ def test_apply_latest_preview_text_does_not_take_image(tmp_path: Path) -> None:
     assert out.sender == "甲"
 
 
+def test_apply_latest_preview_voice_takes_transcript(tmp_path: Path) -> None:
+    """Global-watch [语音] preview must merge ReadLatest STT text despite id mismatch."""
+    impressions = ImpressionStore(tmp_path / "impressions")
+    bot = ChatBot(
+        _QuietModel(),  # type: ignore[arg-type]
+        MemoryStore(tmp_path / "bot.sqlite3", 8),
+        ReplyGate(tmp_path / "missing.toml"),
+        impressions,
+        ImpressionWriter(_QuietModel(), impressions),  # type: ignore[arg-type]
+    )
+    inbound = IncomingTurn(
+        chat="1145",
+        sender="甲",
+        text="[语音]",
+        chat_type="group",
+        preview_only=True,
+        msg_id="preview-hash",
+        content_type="text",
+        index=0,
+    )
+    latest = SeenMessage(
+        chat="1145",
+        text="明天见面",
+        sender="甲",
+        chat_type="group",
+        message_id="bubble-hash",
+        content_type="voice",
+        index=8,
+    )
+    out = bot._apply_latest(inbound, latest)
+    assert out.content_type == "voice"
+    assert out.index == 8
+    assert out.text == "明天见面"
+    assert out.preview_only is False
+
+
+def test_apply_latest_preview_text_does_not_take_voice(tmp_path: Path) -> None:
+    """Plain text preview must not be overwritten by a newer voice ReadLatest."""
+    impressions = ImpressionStore(tmp_path / "impressions")
+    bot = ChatBot(
+        _QuietModel(),  # type: ignore[arg-type]
+        MemoryStore(tmp_path / "bot.sqlite3", 8),
+        ReplyGate(tmp_path / "missing.toml"),
+        impressions,
+        ImpressionWriter(_QuietModel(), impressions),  # type: ignore[arg-type]
+    )
+    inbound = IncomingTurn(
+        chat="1145",
+        sender="甲",
+        text="大家好",
+        chat_type="group",
+        preview_only=True,
+        msg_id="preview-hash",
+        content_type="text",
+        index=0,
+    )
+    latest = SeenMessage(
+        chat="1145",
+        text="明天见面",
+        sender="乙",
+        chat_type="group",
+        message_id="bubble-hash",
+        content_type="voice",
+        index=8,
+    )
+    out = bot._apply_latest(inbound, latest)
+    assert out.text == "大家好"
+    assert out.content_type == "text"
+    assert out.index == 0
+    assert out.preview_only is True
+    assert out.sender == "甲"
+
+
 def test_empty_emotion_failed_capture_abandons_rate_limit(tmp_path: Path) -> None:
     """Capture failure leaving an empty body must not burn min_interval."""
     path = tmp_path / "reply_policy.toml"
